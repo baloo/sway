@@ -1,0 +1,3 @@
+version=3
+opts=filenamemangle=s/.+\/([\d.]+)\.tar\.gz/sway-$1\.tar\.gz/ \
+  https://github.com/SirCmpwn/sway/tags .*/([\d.]+)\.tar\.gz

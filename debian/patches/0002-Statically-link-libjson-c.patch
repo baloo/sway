@@ -1,0 +1,25 @@
+From: Sebastian Noack <sebastian.noack@gmail.com>
+Date: Wed, 26 Apr 2017 17:58:24 +0200
+Subject: Statically link libjson-c
+
+Newer Debian releases provide libjson-c.so.3 with the libjson-c3 package,
+while older Debian releases provide libjson-c.so.2 with the libjson-c2 package.
+So in order to keep this package compatible with a wide range of Debian releases,
+we link libjson-c statically.
+---
+ CMakeLists.txt | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e9e5c60..b19198c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -58,6 +58,8 @@ if (LD_LIBRARY_PATH)
+ endif()
+ 
+ find_package(JsonC REQUIRED)
++set(JSONC_LIBRARIES libjson-c.a)
++
+ find_package(PCRE REQUIRED)
+ find_package(Wayland REQUIRED)
+ find_package(XKBCommon REQUIRED)

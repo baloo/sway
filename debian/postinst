@@ -1,0 +1,11 @@
+#!/bin/sh
+
+set -e
+
+if [ "$1" = "configure" ]; then
+  setcap cap_sys_ptrace,cap_sys_tty_config=eip /usr/bin/sway
+fi
+
+#DEBHELPER#
+
+exit 0

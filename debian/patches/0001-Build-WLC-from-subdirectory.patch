@@ -1,0 +1,56 @@
+From: Sebastian Noack <sebastian.noack@gmail.com>
+Date: Wed, 26 Apr 2017 17:58:24 +0200
+Subject: Build WLC from subdirectory
+
+Sway is based on WLC, a library that isn't packaged in any Debian release.
+In order to keep this package self-contained, build WLC into Sway.
+---
+ CMakeLists.txt         | 7 +++++--
+ wlc/src/CMakeLists.txt | 5 -----
+ 2 files changed, 5 insertions(+), 7 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 685e8fc..e9e5c60 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -13,7 +13,6 @@ add_definitions(
+ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
+ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra")
+ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter")
+-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror")
+ if (CMAKE_COMPILER_IS_GNUCC)
+     if(NOT CMAKE_C_COMPILER_VERSION VERSION_LESS 7.0)
+         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wimplicit-fallthrough=0")
+@@ -60,7 +59,6 @@ endif()
+ 
+ find_package(JsonC REQUIRED)
+ find_package(PCRE REQUIRED)
+-find_package(WLC REQUIRED)
+ find_package(Wayland REQUIRED)
+ find_package(XKBCommon REQUIRED)
+ find_package(Cairo REQUIRED)
+@@ -99,6 +97,11 @@ endif()
+ 
+ include_directories(include)
+ 
++set(WLC_BUILD_STATIC ON CACHE STRING "" FORCE)
++set(WLC_BUILD_EXAMPLES OFF CACHE STRING "" FORCE)
++set(WLC_BUILD_TESTS OFF CACHE STRING "" FORCE)
++add_subdirectory(wlc)
++
+ add_subdirectory(protocols)
+ add_subdirectory(common)
+ add_subdirectory(wayland)
+diff --git a/wlc/src/CMakeLists.txt b/wlc/src/CMakeLists.txt
+index 6a9c4ce..161e9ee 100644
+--- a/wlc/src/CMakeLists.txt
++++ b/wlc/src/CMakeLists.txt
+@@ -161,8 +161,3 @@ mark_as_advanced(WLC_DEFINITIONS WLC_INCLUDE_DIRS WLC_LIBRARIES)
+ 
+ # Add pkgconfig
+ configure_file(wlc.pc.in wlc.pc @ONLY)
+-
+-# Install rules
+-install(TARGETS wlc DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+-install(DIRECTORY "${PROJECT_SOURCE_DIR}/include/wlc" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/wlc.pc" DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")

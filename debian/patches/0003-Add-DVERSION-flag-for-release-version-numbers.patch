@@ -1,0 +1,194 @@
+From: Sebastian Noack <sebastian.noack@gmail.com>
+Date: Wed, 26 Apr 2017 19:52:04 +0200
+Subject: Add -DVERSION flag for release version numbers
+
+---
+ CMakeLists.txt  | 14 +++++++-------
+ sway/ipc-json.c | 37 +++++++------------------------------
+ sway/main.c     | 10 ++--------
+ swaybar/main.c  |  6 +-----
+ swaygrab/main.c |  6 +-----
+ swaylock/main.c |  6 +-----
+ swaymsg/main.c  |  6 +-----
+ 7 files changed, 20 insertions(+), 65 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b19198c..4317449 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -22,7 +22,10 @@ endif()
+ list(INSERT CMAKE_MODULE_PATH 0
+ 	${CMAKE_CURRENT_SOURCE_DIR}/CMake
+ 	)
+-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
++
++if (VERSION)
++	add_definitions(-DSWAY_VERSION=\"${VERSION}\")
++else()
+ 	execute_process(
+ 		COMMAND git describe --always --tags
+ 		OUTPUT_VARIABLE GIT_COMMIT_HASH
+@@ -35,13 +38,10 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/.git)
+ 		OUTPUT_STRIP_TRAILING_WHITESPACE
+ 		WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+ 		)
+-endif()
+ 
+-add_definitions(-DSWAY_GIT_VERSION=\"${GIT_COMMIT_HASH}\")
+-add_definitions(-DSWAY_GIT_BRANCH=\"${GIT_BRANCH}\")
+-
+-string(TIMESTAMP CURRENT_DATE "%Y-%m-%d" UTC)
+-add_definitions(-DSWAY_VERSION_DATE=\"${CURRENT_DATE}\")
++	string(TIMESTAMP CURRENT_DATE "%Y-%m-%d" UTC)
++	add_definitions("-DSWAY_VERSION=\"${GIT_COMMIT_HASH} (${CURRENT_DATE}, branch \\\"${GIT_BRANCH}\\\")\"")
++endif()
+ 
+ option(enable-swaylock "Enables the swaylock utility" YES)
+ option(enable-swaybg "Enables the wallpaper utility" YES)
+diff --git a/sway/ipc-json.c b/sway/ipc-json.c
+index 6bd5204..635ed65 100644
+--- a/sway/ipc-json.c
++++ b/sway/ipc-json.c
+@@ -243,39 +243,16 @@ json_object *ipc_json_describe_container(swayc_t *c) {
+ }
+ 
+ json_object *ipc_json_get_version() {
++	int major = 0, minor = 0, patch = 0;
+ 	json_object *version = json_object_new_object();
+ 
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-	char *full_version = calloc(strlen(SWAY_GIT_VERSION) + strlen(SWAY_GIT_BRANCH) + strlen(SWAY_VERSION_DATE) + 20, 1);
+-	if (!full_version) {
+-		json_object_object_add(version, "human_readable",
+-				json_object_new_string("Allocating version string failed"));
+-		// TODO: it's stupid that we allocate this in the first place
+-		json_object_object_add(version, "major", json_object_new_int(0));
+-		json_object_object_add(version, "minor", json_object_new_int(0));
+-		json_object_object_add(version, "patch", json_object_new_int(0));
+-		return version;
+-	}
+-	strcat(full_version, SWAY_GIT_VERSION);
+-	strcat(full_version, " (");
+-	strcat(full_version, SWAY_VERSION_DATE);
+-	strcat(full_version, ", branch \"");
+-	strcat(full_version, SWAY_GIT_BRANCH);
+-	strcat(full_version, "\")");
+-
+-	json_object_object_add(version, "human_readable", json_object_new_string(full_version));
++	sscanf(SWAY_VERSION, "%u.%u.%u", &major, &minor, &patch);
++
++	json_object_object_add(version, "human_readable", json_object_new_string(SWAY_VERSION));
+ 	json_object_object_add(version, "variant", json_object_new_string("sway"));
+-	// Todo once we actually release a version
+-	json_object_object_add(version, "major", json_object_new_int(0));
+-	json_object_object_add(version, "minor", json_object_new_int(0));
+-	json_object_object_add(version, "patch", json_object_new_int(1));
+-	free(full_version);
+-#else
+-	json_object_object_add(version, "human_readable", json_object_new_string("version not found"));
+-	json_object_object_add(version, "major", json_object_new_int(0));
+-	json_object_object_add(version, "minor", json_object_new_int(0));
+-	json_object_object_add(version, "patch", json_object_new_int(0));
+-#endif
++	json_object_object_add(version, "major", json_object_new_int(major));
++	json_object_object_add(version, "minor", json_object_new_int(minor));
++	json_object_object_add(version, "patch", json_object_new_int(patch));
+ 
+ 	return version;
+ }
+diff --git a/sway/main.c b/sway/main.c
+index 5e3b241..42caa89 100644
+--- a/sway/main.c
++++ b/sway/main.c
+@@ -235,11 +235,7 @@ int main(int argc, char **argv) {
+ 			debug = 1;
+ 			break;
+ 		case 'v': // version
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-			fprintf(stdout, "sway version %s (%s, branch \"%s\")\n", SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
+-#else
+-			fprintf(stdout, "version not detected\n");
+-#endif
++			fprintf(stdout, "sway version " SWAY_VERSION "\n");
+ 			exit(EXIT_SUCCESS);
+ 			break;
+ 		case 'V': // verbose
+@@ -346,9 +342,7 @@ int main(int argc, char **argv) {
+ 	// prevent ipc from crashing sway
+ 	signal(SIGPIPE, SIG_IGN);
+ 
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-	sway_log(L_INFO, "Starting sway version %s (%s, branch \"%s\")\n", SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
+-#endif
++	sway_log(L_INFO, "Starting sway version " SWAY_VERSION "\n");
+ 
+ 	init_layout();
+ 
+diff --git a/swaybar/main.c b/swaybar/main.c
+index c9a554a..5580ae0 100644
+--- a/swaybar/main.c
++++ b/swaybar/main.c
+@@ -62,11 +62,7 @@ int main(int argc, char **argv) {
+ 			bar_id = strdup(optarg);
+ 			break;
+ 		case 'v':
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-			fprintf(stdout, "sway version %s (%s, branch \"%s\")\n", SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
+-#else
+-			fprintf(stdout, "version not detected\n");
+-#endif
++			fprintf(stdout, "sway version " SWAY_VERSION "\n");
+ 			exit(EXIT_SUCCESS);
+ 			break;
+ 		case 'd': // Debug
+diff --git a/swaygrab/main.c b/swaygrab/main.c
+index a88a6bc..e7f4c76 100644
+--- a/swaygrab/main.c
++++ b/swaygrab/main.c
+@@ -199,11 +199,7 @@ int main(int argc, char **argv) {
+ 			framerate = atoi(optarg);
+ 			break;
+ 		case 'v':
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-			fprintf(stdout, "sway version %s (%s, branch \"%s\")\n", SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
+-#else
+-			fprintf(stdout, "version not detected\n");
+-#endif
++			fprintf(stdout, "sway version " SWAY_VERSION "\n");
+ 			exit(EXIT_SUCCESS);
+ 			break;
+ 		default:
+diff --git a/swaylock/main.c b/swaylock/main.c
+index f004a8d..4a4f40d 100644
+--- a/swaylock/main.c
++++ b/swaylock/main.c
+@@ -415,11 +415,7 @@ int main(int argc, char **argv) {
+ 			socket_path = optarg;
+ 			break;
+ 		case 'v':
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-			fprintf(stdout, "swaylock version %s (%s, branch \"%s\")\n", SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
+-#else
+-			fprintf(stdout, "version not detected\n");
+-#endif
++			fprintf(stdout, "swaylock version " SWAY_VERSION "\n");
+ 			exit(EXIT_SUCCESS);
+ 			break;
+ 		case 'u':
+diff --git a/swaymsg/main.c b/swaymsg/main.c
+index 29e80f0..bbed1bb 100644
+--- a/swaymsg/main.c
++++ b/swaymsg/main.c
+@@ -59,11 +59,7 @@ int main(int argc, char **argv) {
+ 			cmdtype = strdup(optarg);
+ 			break;
+ 		case 'v':
+-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
+-			fprintf(stdout, "sway version %s (%s, branch \"%s\")\n", SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
+-#else
+-			fprintf(stdout, "version not detected\n");
+-#endif
++			fprintf(stdout, "sway version " SWAY_VERSION "\n");
+ 			exit(EXIT_SUCCESS);
+ 			break;
+ 		default:
