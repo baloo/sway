@@ -1,3 +1,53 @@
+sway (0.13.0-1) zesty; urgency=medium
+
+  [ Drew DeVault ]
+  * Add pretty printing to swaymsg
+  * Fix dangling file descriptors (fixes #1152)
+  * Downgrade nvidia proprietary driver warning
+  * Implement more thourough nvidia config check
+  * Add .build.yml (for builds.sr.ht)
+  * Merge pull request #1183 from sleep-walker/master
+  * Merge pull request #1184 from JerziKaminsky/logging2
+  * Merge pull request #1187 from 4e554c4c/master
+  * Merge pull request #1194 from snoack/version
+  * Fix link to dotfiles, closes #1193
+  * Merge pull request #1201 from SirCmpwn/fix-colors
+  * Set child border to background if not specified
+  * Merge pull request #1204 from zandrmartin/prevent-layout-auto-crash
+  * Update config.in
+  * Update .build.yml
+  * Merge pull request #1211 from wdbw/missing-send-event
+
+  [ Calvin Lee ]
+  * Impliment i3-style marks
+  * Improve criteria handling
+  * Add `-t get_marks` and use more i3-like marks
+  * Prevent sway from duplicating on a failed fork
+
+  [ Scott Anderson ]
+  * Changed regular expressions to use PCRE for i3 compatibility
+  * Added designated initaliser, to prevent any possible problem with ordering
+  * Removed explicitly setting file descriptors to -1
+
+  [ Jerzi Kaminsky ]
+  * Add libcap check to CMake
+  * Remain compat with libinput < 1.7.0
+  * Fix style in sway-bar(5) manpage
+  * Fix variadic forwarding in sway_assert
+  * Fix location reported by sway_assert
+  * Disambiguate get_*_policy() and get_*_policy_mask()
+  * Rename get_policy to get_feature_policy
+  * Move get_feature_policy to sway/security.c
+  * Add validate_ipc_target()
+  * Add resolve_path() to utils
+  * Handle symlinks as IPC security targets
+
+  [ Vasilij Schneidermann ]
+  * Implement and document `move [to] scratchpad`
+  * Use i3's dimensions for initial scratchpad views
+
+ --  Sebastian Noack <sebastian.noack@gmail.com>  Tue, 09 May 2017 08:39:19 +0200
+
 sway (0.12.2-1) zesty; urgency=medium
 
   * Initial package
