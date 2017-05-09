@@ -1,3 +1,2 @@
 0001-Build-WLC-from-subdirectory.patch
 0002-Statically-link-libjson-c.patch
-0003-Add-DVERSION-flag-for-release-version-numbers.patch

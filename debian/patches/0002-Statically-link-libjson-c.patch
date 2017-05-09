@@ -11,10 +11,10 @@ we link libjson-c statically.
  1 file changed, 2 insertions(+)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e9e5c60..b19198c 100644
+index 17d5f54..5734d13 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -58,6 +58,8 @@ if (LD_LIBRARY_PATH)
+@@ -55,6 +55,8 @@ if (LD_LIBRARY_PATH)
  endif()
  
  find_package(JsonC REQUIRED)
