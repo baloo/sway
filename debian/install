@@ -1,0 +1,2 @@
+debian/sway/usr/bin/sway usr/lib/sway/
+debian/scripts/sway usr/bin/

@@ -1,0 +1,12 @@
+#!/bin/sh
+
+if [ -f /etc/default/keyboard ]; then
+  . /etc/default/keyboard
+
+  [ -z "$XKB_DEFAULT_MODEL" ] && export XKB_DEFAULT_MODEL="$XKBMODEL"
+  [ -z "$XKB_DEFAULT_LAYOUT" ] && export XKB_DEFAULT_LAYOUT="$XKBLAYOUT"
+  [ -z "$XKB_DEFAULT_VARIANT" ] && export XKB_DEFAULT_VARIANT="$XKBVARIANT"
+  [ -z "$XKB_DEFAULT_OPTIONS" ] && export XKB_DEFAULT_OPTIONS="$XKBOPTIONS"
+fi
+
+/usr/lib/sway/sway "$@"
