@@ -15,6 +15,6 @@ Vcs-Browser: https://github.com/snoack/sway/tree/debian
 Package: sway
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, libcap2-bin 
-Recommends: xwayland, imagemagick, ffmpeg
+Recommends: xwayland, imagemagick, ffmpeg, suckless-tools
 Description: tiling window manager for Wayland
  "SirCmpwn's Wayland compositor" is a work in progress i3-compatible Wayland compositor.
