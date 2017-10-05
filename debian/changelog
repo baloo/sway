@@ -1,3 +1,66 @@
+sway (0.14.0-1) zesty; urgency=medium
+
+  [ Tomáš Čech ]
+  * explicitly ignore unused return value
+
+  [ Jerzi Kaminsky ]
+  * Make sway_abort() report location
+
+  [ Calvin Lee ]
+  * Fix typo in sway(5)
+  * Implement Tray Icons
+  * Reorganize Tray Code
+  * Fix Catching NewIcon Signal
+  * Remove Xembed Support
+
+  [ Drew DeVault ]
+  * Fix link to dotfiles, closes #1193
+  * Implement no_focus
+  * Update sway(5)
+  * Fix handling of floating windows
+  * Update .build.yml
+  * Implement KDE's server-side decoration protocol
+  * Support specifying fewer than 5 colors
+  * Set child border to background if not specified
+  * Add HACKING.md
+  * Update config.in
+  * Mention Patreon in README.md
+  * Drop epoll dependency
+  * Revert "Drop epoll dependency"
+  * Fix cairo blending on tray icons
+  * Fix Firefox address bar thing
+  * Force focus on unmanaged views during pointer test
+  * Revert "swaybar: Group child processes for signalling"
+  * Fix #1252
+  * Make asciidoc (and man pages) optional
+  * Remove test clipboard code
+
+  [ Zandr Martin ]
+  * prevent crash when `layout auto` is missing args
+  * document font command
+
+  [ Josip Janzic ]
+  * Add mouse button bindings
+
+  [ wdbw ]
+  * Add missing send-event mode to sway-input(5)
+
+  [ Mykyta Holubakha ]
+  * Initialise logging earlier
+  * Terminate when both suid bit and filecaps are set
+  * Replace spaces with tabs in resolve_path
+
+  [ johalun ]
+  * FreeBSD fixes
+
+  [ Ekaterina Vaartis ]
+  * include stdint to be compaitable with musl
+
+  [ Yury Krivopalov ]
+  * swaybar: Group child processes for signalling
+
+ -- Sebastian Noack <sebastian.noack@gmail.com>  Wed, 04 Oct 2017 23:12:28 -0400
+
 sway (0.13.0-2) zesty; urgency=medium
 
   * Use Debian alternative system rather than defaulting to urxvt
