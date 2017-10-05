@@ -1,5 +1,5 @@
 From: Sebastian Noack <sebastian.noack@gmail.com>
-Date: Wed, 26 Apr 2017 17:58:24 +0200
+Date: Wed, 4 Oct 2017 22:39:24 -0400
 Subject: Statically link libjson-c
 
 Newer Debian releases provide libjson-c.so.3 with the libjson-c3 package,
@@ -11,10 +11,10 @@ we link libjson-c statically.
  1 file changed, 2 insertions(+)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 17d5f54..5734d13 100644
+index 2d9e4e0..59c1858 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -55,6 +55,8 @@ if (LD_LIBRARY_PATH)
+@@ -57,6 +57,8 @@ if (LD_LIBRARY_PATH)
  endif()
  
  find_package(JsonC REQUIRED)
