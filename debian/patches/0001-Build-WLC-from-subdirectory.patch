@@ -13,12 +13,6 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 1101bd0..2d9e4e0 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1,4 +1,4 @@
--cmake_minimum_required(VERSION 3.1.0)
-+cmake_minimum_required(VERSION 3r1.0)
- 
- project(sway C)
- 
 @@ -11,7 +11,6 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall")
  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra")
  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-parameter")
