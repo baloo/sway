@@ -1,3 +1,10 @@
+sway (0.14.0-2) zesty; urgency=medium
+
+  * Fixed typo in build scripts
+
+ -- Sebastian Noack <sebastian.noack@gmail.com>  Mon, 09 Oct 2017 01:04:20 -0400
+
+
 sway (0.14.0-1) zesty; urgency=medium
 
   [ Tomáš Čech ]
