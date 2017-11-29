@@ -7,7 +7,7 @@ Subject: Default to x-terminal-emulator instead hard-coding urxvt
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/config.in b/config.in
-index 993e2ab..6bc4d73 100644
+index b39a39a..b75d65d 100644
 --- a/config.in
 +++ b/config.in
 @@ -14,7 +14,7 @@ set $down j
