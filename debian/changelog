@@ -1,9 +1,172 @@
+sway (0.15.0-1) zesty; urgency=medium
+
+  [ Andrew Conrad ]
+  * Install wallpapers in DATADIR/backgrounds/sway
+  * Correct swaylock man page description of -i and -c
+
+  [ David Blajda ]
+  * FFmpeg options for swaygrab
+
+  [ Mykyta Holubakha ]
+  * Handle getline failure in icon theme parsing
+  * permit.c: check for NULL pointer dereference
+  * Do not add empty policies
+  * Translated README to ukrainian
+
+  [ Drew DeVault ]
+  * Fix #1252
+  * Revert "swaybar: Group child processes for signalling"
+  * Make asciidoc (and man pages) optional
+  * Remove test clipboard code
+  * Clean up fallthrough issues
+  * One more
+  * Re-enable implicit fallthrough warnings
+  * Translate README to Japanese / READMEを日本語訳す
+  * Update READMEs
+  * Update README.ja.md / README.ja.mdは修正する
+  * Update README.ja.md
+  * Add Українська to readme TLs
+  * Fix italian link in readme
+  * Fix README.it.md
+  * Update IRC channel in CONTRIBUTING.md
+  * Update setcap commands in README
+  * Update README et al with new links
+  * Fix crash on swaygrab with scratchpad populated
+  * Remove destroyed views from scratchpad
+  * Document swaylock -f, scratchpad show
+  * Document new criteria
+  * Fix #1291
+  * Fix use-after free introduced by cbe7364
+  * Fix crash closing fullscreen windows in container
+  * Add feature freeze notice to readme
+  * Remove broken link to Spanish translation
+
+  [ nyorain ]
+  * Add the 'clipboard' command to set the clipboard
+  * Implement ipc get_clipboard
+  * Fix/Simplify get_clipboard ipc-server impl
+  * Rework get_clipboard implementation
+  * Handle x11 text atoms in get_clipboard ipc
+  * Signal base64 in clipboard type; Reimplement loop
+  * Add timeout; Fix receive loop & style issues
+  * Close fd in clipboard request
+  * Add get_clipbard ipc errors; Adapt swaymsg
+
+  [ azarus ]
+  * Fix zsh completion for _swaylock
+  * Check for Raspberry Pi
+
+  [ Hummer12007 ]
+  * Disable -Wunused-result diagnostic
+  * Raise max ipc message size limit to 256 MB
+  * Update README.uk.md
+  * Translated missing header
+
+  [ Linus Heckemann ]
+  * swaybg: check that background can be loaded
+
+  [ Johannes Lundberg ]
+  * Adjust _XOPEN_SOURCE value for build on FreeBSD and fix pointer comparison error.
+  * Add secucity config for FreeBSD.
+  * security: enabled ipc on freebsd
+
+  [ Tobias Blass ]
+  * fix use-after-free bug
+  * [swaybar] fix non-dbus build
+
+  [ Scott Anderson ]
+  * Use WLC v2 pointer interface
+
+  [ Calvin Lee ]
+  * Don't trust SNI names, fixes #1274
+  * Fix name validation in sni_watcher.c
+  * Fix memory leaks in swaybar tray
+  * Allow swaylock indicator size to be configurable
+  * Prevent race condition in the kill command
+  * Prevent crash if DBus connection is NULL
+  * Clean up output command
+
+  [ emersion ]
+  * Fix typo in debug log
+
+  [ Ilya Lukyanov ]
+  * Implement nonblocking IO in IPC server
+
+  [ Jonathan Schleußer ]
+  * Translate README to German
+  * Comply with TL guideline update; Fix typo
+
+  [ Konstantinos Feretos ]
+  *  Translate README.md to Greek / Μετάφραση του README.md στα Ελληνικά
+  * Updates README with links to Greek, French and Spanish
+  * Moves translation status below screenshot
+  * Localization clarifications
+
+  [ Abdelhakim Qbaich ]
+  * Translation README to French / Traduction du README en français
+
+  [ sykhro ]
+  * Beginning of italian translation
+  * Added language help section
+  * Fixed minor errors
+  * Minor rewording
+  * Moved support subsection
+
+  [ Clar Charr ]
+  * Use fork in swaygrab instead of popen.
+
+  [ akokshar@redhat.com ]
+  * click_events as documented at https://i3wm.org/docs/i3bar-protocol.html
+  * style fixes
+  * styling fixes
+  * styling fixes
+
+  [ Emerson Ferreira ]
+  * Translate README to portuguese
+  * Move lang status section + clarify WIP status
+  * Better translation for "bounty"
+  * Add link to portuguese README
+
+  [ Dark Rift ]
+  * Added russian translation
+  * Added subsection for translators
+  * Minor edits, added reference to guidelines
+  * Added link to README.ru.md
+
+  [ Markus Ongyerth ]
+  * fixes a hanging swaygrab
+
+  [ Atnanasi ]
+  * Fix japanese-translate in README.ja.md
+  * Fix some text
+
+  [ John Axel Eriksson ]
+  * swaybar protocol: handle button 4 and 5
+
+  [ Jonas Karlsson ]
+  * Fix issue #1287
+
+  [ Zuzana Svetlikova ]
+  * Fix github links in doc
+
+  [ lbonn ]
+  * Fix move to named workspaces
+  * Make `workspace_next_name` work with spaces
+  * Security config: skip hidden files
+  * ipc/tree: output mandatory fields for all nodes
+  * ipc/tree: populate `focus` fields
+  * commands: implement 3 missing criteria from i3
+  * commands: allow criterion values to be unquoted
+  * commands: fail when criteria match nothing
+  * ipc/window-event: fill "container" on close events
+
+ -- Sebastian Noack <sebastian.noack@gmail.com>  Wed, 29 Nov 2017 12:15:45 +0100
+
 sway (0.14.0-2) zesty; urgency=medium
 
   * Fixed typo in build scripts
 
  -- Sebastian Noack <sebastian.noack@gmail.com>  Mon, 09 Oct 2017 01:04:20 -0400
-
 
 sway (0.14.0-1) zesty; urgency=medium
 
