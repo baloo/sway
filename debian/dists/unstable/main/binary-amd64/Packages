@@ -1,0 +1,18 @@
+Package: sway
+Version: 1.0~alpha.6~git20180811-2
+Architecture: amd64
+Maintainer: Sebastian Noack <sebastian.noack@gmail.com>
+Installed-Size: 5606
+Depends: libc6 (>= 2.17), libcairo2 (>= 1.10.0), libcap2 (>= 1:2.10), libgdk-pixbuf2.0-0 (>= 2.31.1), libglib2.0-0 (>= 2.12.0), libinput10 (>= 1.5.0), libjson-c4 (>= 0.13.1), libpam0g (>= 0.99.7.1), libpango-1.0-0 (>= 1.20.0), libpangocairo-1.0-0 (>= 1.22.0), libpcre3, libpixman-1-0 (>= 0.11.2), libsystemd0 (>= 221), libwayland-client0 (>= 1.9.91), libwayland-cursor0 (>= 1.0.2), libwayland-server0 (>= 1.5.91), libwlroots0, libxcb1, libxkbcommon0 (>= 0.7.0), libcap2-bin
+Recommends: xwayland, imagemagick, ffmpeg, suckless-tools
+Filename: ./sway_1.0~alpha.6~git20180811-2_amd64.deb
+Size: 5011944
+MD5sum: 84764b962b1bb0f75210c18b9d2a678a
+SHA1: 66530c2a090dc082ddd500a92b483debba0085b7
+SHA256: 0400be9f9131755c5fdc9ef6746d1536529ea70571e8ef931b44687c8268ad8d
+Section: misc
+Priority: optional
+Homepage: https://github.com/swaywm/sway
+Description: tiling window manager for Wayland
+ "SirCmpwn's Wayland compositor" is a work in progress i3-compatible Wayland compositor.
+

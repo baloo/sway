@@ -1,0 +1,36 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Date: Sun, 12 Aug 2018 08:02:58 +0000
+MD5Sum:
+ bf5dbcb5c13019fa960d75de5ce9c0cd               38 Release
+ 3ee8ae96392eb3b6e285b2f8e7579b85             1117 main/binary-amd64/Packages
+ 2ffb60f96fd030621796663e57f3361d              833 main/binary-amd64/Packages.gpg
+SHA1:
+ b045db268b723fc3c6b761b8b9260033788314c5               38 Release
+ ce7f8f5a8b0b959d48a4b7e308b484aeeb91c4fd             1117 main/binary-amd64/Packages
+ 635be58944b8dfd5c5c27e27bd7cb574bf01524e              833 main/binary-amd64/Packages.gpg
+SHA256:
+ a34b2a4abf6514c488bb28949d17a42ff5f7f388074579842c911d21d91b5bde               38 Release
+ d9fb6adb3f4e6dad650efcd6fa9e99f163701b44736d20f57c04f13a986a1c75             1117 main/binary-amd64/Packages
+ 18abef96186691c6ea20cef1527ae6ec5f9a337863c8043c5df230aefaab408c              833 main/binary-amd64/Packages.gpg
+SHA512:
+ 6fdb82fdac1179ea8c038dce940d9f0fb2aba949ed5cb2a062414b72cb07e522dc8432ff4d53697bbb1bfc95fdee4c5d460e09e60cc57b3229f88372e41a1942               38 Release
+ 52698d2122d72bd3a34439ce39a2582351ba5a0d497b169c04b2b75ac4a9dec32a9f6eae6ed96fbca2353437e1440f8b566ab8114d70ea033c7b97fba7b54125             1117 main/binary-amd64/Packages
+ ccbd65495474231564f37ca684aa2561789113f0458229bf643b96220da2d272f52e31376c52b8c46c7fb8a5787ceea5c11aa69d9d36065146e5a9b91f950267              833 main/binary-amd64/Packages.gpg
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCAAdFiEEqXoV9fTgb+4D2EfCIEwZf4VSLz8FAltv6bQACgkQIEwZf4VS
+Lz92rA/8C46AHHFvNNgWxNEP9AlnhjhpapvlwfdpKbfLapKsHnpQ+NBUVidcHTzv
+KawIc9agUSmslebWVoySUP1UuoYFnCbYYHnHt5WsNJ4IDSnLbXluNs9LymFKRyoV
+LtToQIwIwezHsX7K8hZtJMeCrR5N0nr6ii8qJMy8TfJV1pRebziizNhxxHNM5Y9d
+ioWhYzCXS9MDE5i3MvCQdkGlR61gsIubYJdHbqzp7BCuKXsyRHU84F5gsxS9/5E/
+hlxeu8WyDW+tIdBwEiw9G6A7dSpRXhG8znCNG1JrQzLNjIomVcC5xLXka6PrWuPT
+n4rf4oKoQUYYPzhi2cZLLT6MXQTVQQUDl4pzKMpqKtHMACGSomuyAqabwX0xcf4y
+xAaVBR6j3R1dT34CYPYzZnrOn4DyN63PRwwVv3OpmJtxHMHtb816Q74+LPXkWWVE
+H4DZzj0aMqrAbmoR2qnyQgC9Y78BHj9pEBOChcOP+hIodt5W7ZoMlP4Bwzp6xvbZ
+PocMrQTdIqJ7o/za91WAEvXyMsT9FV8MEM1uhaKB9+p0z+/IQKadXC1NBjt1rdXa
+5dAI7VFVSlTbe9+bviHfwSx3Cn5XU41Zlmwxw2bdGR4cvoaX1jrFc436YiHWeAhJ
+gjE9/IQLcatbLg/a6ltsNOhiMb56z02/3YLUHo1Y/3D85pcn8fQ=
+=TRta
+-----END PGP SIGNATURE-----
