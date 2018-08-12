@@ -2,13 +2,14 @@ Source: sway
 Section: misc
 Priority: optional
 Maintainer: Sebastian Noack <sebastian.noack@gmail.com>
-Build-Depends: debhelper (>= 9), cmake, asciidoc, xsltproc, xmlto,
+Build-Depends: debhelper (>= 9), meson, asciidoc, xsltproc, xmlto,
   wayland-protocols, libcap-dev, libdbus-1-dev, libgbm-dev,
-  libgdk-pixbuf2.0-dev,libgles2-mesa-dev, libinput-dev, libjson-c-dev,
+  libgdk-pixbuf2.0-dev,libgles2-mesa-dev, libinput-dev, libjson-c-dev (>=0.13),
   libpam0g-dev,libpango1.0-dev, libsystemd-dev, libxcb-composite0-dev,
-  libxcb-ewmh-dev, libxcb-image0-dev, libxcb-xkb-dev, libxkbcommon-dev
+  libxcb-ewmh-dev, libxcb-image0-dev, libxcb-xkb-dev, libxkbcommon-dev,
+  libwlroots-dev, libcairo2-dev
 Standards-Version: 3.9.8
-Homepage: https://github.com/SirCmpwn/sway
+Homepage: https://github.com/swaywm/sway
 Vcs-Git: https://github.com/snoack/sway -b debian
 Vcs-Browser: https://github.com/snoack/sway/tree/debian
 
