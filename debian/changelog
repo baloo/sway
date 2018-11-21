@@ -1,3 +1,9 @@
+sway (1.0~alpha.6~git20180811-2) unstable; urgency=medium
+
+  * fixup capabilities
+
+ -- Arthur Gautier <baloo@superbaloo.net>  Sun, 12 Aug 2018 07:57:55 +0000
+
 sway (1.0~alpha.6~git20180811-1) unstable; urgency=medium
 
   * Release 1.0~alpha.6~git20180811

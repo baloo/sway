@@ -12,7 +12,7 @@ override_dh_auto_configure:
 	dh_auto_configure -O--buildsystem=meson -- -Dsway_version=${UPSTREAM_VER}
 
 override_dh_clean:
-	rm -rf build
+	rm -rf build ${CCACHE_DIR}
 	dh_clean
 
 PACKAGE_VER:=$(shell dpkg-parsechangelog | sed -n -e 's/^Version: //p')
