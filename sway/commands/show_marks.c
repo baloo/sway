@@ -2,6 +2,7 @@
 #include <string.h>
 #include "sway/commands.h"
 #include "sway/config.h"
+#include "sway/tree/root.h"
 #include "sway/tree/view.h"
 #include "sway/output.h"
 #include "list.h"
@@ -10,9 +11,7 @@
 #include "util.h"
 
 static void rebuild_marks_iterator(struct sway_container *con, void *data) {
-	if (con->type == C_VIEW) {
-		view_update_marks_textures(con->sway_view);
-	}
+	container_update_marks_textures(con);
 }
 
 struct cmd_results *cmd_show_marks(int argc, char **argv) {
@@ -24,13 +23,12 @@ struct cmd_results *cmd_show_marks(int argc, char **argv) {
 	config->show_marks = parse_boolean(argv[0], config->show_marks);
 
 	if (config->show_marks) {
-		container_for_each_descendant(&root_container,
-				rebuild_marks_iterator, NULL);
+		root_for_each_container(rebuild_marks_iterator, NULL);
 	}
 
-	for (int i = 0; i < root_container.children->length; ++i) {
-		struct sway_container *con = root_container.children->items[i];
-		output_damage_whole(con->sway_output);
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		output_damage_whole(output);
 	}
 
 	return cmd_results_new(CMD_SUCCESS, NULL, NULL);

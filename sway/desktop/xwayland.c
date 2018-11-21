@@ -8,20 +8,27 @@
 #include "log.h"
 #include "sway/desktop.h"
 #include "sway/desktop/transaction.h"
+#include "sway/input/cursor.h"
 #include "sway/input/input-manager.h"
 #include "sway/input/seat.h"
 #include "sway/output.h"
 #include "sway/server.h"
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
-#include "sway/tree/layout.h"
 #include "sway/tree/view.h"
+#include "sway/tree/workspace.h"
 
 static const char *atom_map[ATOM_LAST] = {
+	"_NET_WM_WINDOW_TYPE_NORMAL",
 	"_NET_WM_WINDOW_TYPE_DIALOG",
 	"_NET_WM_WINDOW_TYPE_UTILITY",
 	"_NET_WM_WINDOW_TYPE_TOOLBAR",
 	"_NET_WM_WINDOW_TYPE_SPLASH",
+	"_NET_WM_WINDOW_TYPE_MENU",
+	"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+	"_NET_WM_WINDOW_TYPE_POPUP_MENU",
+	"_NET_WM_WINDOW_TYPE_TOOLTIP",
+	"_NET_WM_WINDOW_TYPE_NOTIFICATION",
 	"_NET_WM_STATE_MODAL",
 };
 
@@ -59,8 +66,7 @@ static void unmanaged_handle_map(struct wl_listener *listener, void *data) {
 		wl_container_of(listener, surface, map);
 	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
 
-	wl_list_insert(root_container.sway_root->xwayland_unmanaged.prev,
-		&surface->link);
+	wl_list_insert(root->xwayland_unmanaged.prev, &surface->link);
 
 	wl_signal_add(&xsurface->surface->events.commit, &surface->commit);
 	surface->commit.notify = unmanaged_handle_commit;
@@ -70,9 +76,8 @@ static void unmanaged_handle_map(struct wl_listener *listener, void *data) {
 	desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true);
 
 	if (wlr_xwayland_or_surface_wants_focus(xsurface)) {
-		struct sway_seat *seat = input_manager_current_seat(input_manager);
-		struct wlr_xwayland *xwayland =
-			seat->input->server->xwayland.wlr_xwayland;
+		struct sway_seat *seat = input_manager_current_seat();
+		struct wlr_xwayland *xwayland = server.xwayland.wlr_xwayland;
 		wlr_xwayland_set_seat(xwayland, seat->wlr_seat);
 		seat_set_focus_surface(seat, xsurface->surface, false);
 	}
@@ -86,15 +91,14 @@ static void unmanaged_handle_unmap(struct wl_listener *listener, void *data) {
 	wl_list_remove(&surface->link);
 	wl_list_remove(&surface->commit.link);
 
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
+	struct sway_seat *seat = input_manager_current_seat();
 	if (seat->wlr_seat->keyboard_state.focused_surface ==
 			xsurface->surface) {
 		// Restore focus
-		struct sway_container *previous =
-			seat_get_focus_inactive(seat, &root_container);
+		struct sway_node *previous = seat_get_focus_inactive(seat, &root->node);
 		if (previous) {
 			// Hack to get seat to re-focus the return value of get_focus
-			seat_set_focus(seat, previous->parent);
+			seat_set_focus(seat, NULL);
 			seat_set_focus(seat, previous);
 		}
 	}
@@ -154,6 +158,8 @@ static const char *get_string_prop(struct sway_view *view, enum sway_view_prop p
 		return view->wlr_xwayland_surface->class;
 	case VIEW_PROP_INSTANCE:
 		return view->wlr_xwayland_surface->instance;
+	case VIEW_PROP_WINDOW_ROLE:
+		return view->wlr_xwayland_surface->role;
 	default:
 		return NULL;
 	}
@@ -166,6 +172,11 @@ static uint32_t get_int_prop(struct sway_view *view, enum sway_view_prop prop) {
 	switch (prop) {
 	case VIEW_PROP_X11_WINDOW_ID:
 		return view->wlr_xwayland_surface->window_id;
+	case VIEW_PROP_X11_PARENT_ID:
+		if (view->wlr_xwayland_surface->parent) {
+			return view->wlr_xwayland_surface->parent->window_id;
+		}
+		return 0;
 	case VIEW_PROP_WINDOW_TYPE:
 		return *view->wlr_xwayland_surface->window_type;
 	default:
@@ -218,7 +229,9 @@ static bool wants_floating(struct sway_view *view) {
 	struct wlr_xwayland_surface *surface = view->wlr_xwayland_surface;
 	struct sway_xwayland *xwayland = &server.xwayland;
 
-	// TODO: return true if the NET_WM_STATE is MODAL
+	if (surface->modal) {
+		return true;
+	}
 
 	for (size_t i = 0; i < surface->window_type_len; ++i) {
 		xcb_atom_t type = surface->window_type[i];
@@ -232,21 +245,38 @@ static bool wants_floating(struct sway_view *view) {
 
 	struct wlr_xwayland_surface_size_hints *size_hints = surface->size_hints;
 	if (size_hints != NULL &&
-			size_hints->min_width != 0 && size_hints->min_height != 0 &&
-			size_hints->max_width == size_hints->min_width &&
-			size_hints->max_height == size_hints->min_height) {
+			size_hints->min_width > 0 && size_hints->min_height > 0 &&
+			(size_hints->max_width == size_hints->min_width ||
+			size_hints->max_height == size_hints->min_height)) {
 		return true;
 	}
 
 	return false;
 }
 
-static bool has_client_side_decorations(struct sway_view *view) {
-	if (xwayland_view_from_view(view) == NULL) {
+static void handle_set_decorations(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_view *xwayland_view =
+		wl_container_of(listener, xwayland_view, set_decorations);
+	struct sway_view *view = &xwayland_view->view;
+	struct wlr_xwayland_surface *xsurface = view->wlr_xwayland_surface;
+
+	bool csd = xsurface->decorations != WLR_XWAYLAND_SURFACE_DECORATIONS_ALL;
+	view_update_csd_from_client(view, csd);
+}
+
+static bool is_transient_for(struct sway_view *child,
+		struct sway_view *ancestor) {
+	if (xwayland_view_from_view(child) == NULL) {
 		return false;
 	}
-	struct wlr_xwayland_surface *surface = view->wlr_xwayland_surface;
-	return surface->decorations != WLR_XWAYLAND_SURFACE_DECORATIONS_ALL;
+	struct wlr_xwayland_surface *surface = child->wlr_xwayland_surface;
+	while (surface) {
+		if (surface->parent == ancestor->wlr_xwayland_surface) {
+			return true;
+		}
+		surface = surface->parent;
+	}
+	return false;
 }
 
 static void _close(struct sway_view *view) {
@@ -272,23 +302,51 @@ static const struct sway_view_impl view_impl = {
 	.set_tiled = set_tiled,
 	.set_fullscreen = set_fullscreen,
 	.wants_floating = wants_floating,
-	.has_client_side_decorations = has_client_side_decorations,
+	.is_transient_for = is_transient_for,
 	.close = _close,
 	.destroy = destroy,
 };
+
+static void get_geometry(struct sway_view *view, struct wlr_box *box) {
+	box->x = box->y = 0;
+	if (view->surface) {
+		box->width = view->surface->current.width;
+		box->height = view->surface->current.height;
+	} else {
+		box->width = 0;
+		box->height = 0;
+	}
+}
 
 static void handle_commit(struct wl_listener *listener, void *data) {
 	struct sway_xwayland_view *xwayland_view =
 		wl_container_of(listener, xwayland_view, commit);
 	struct sway_view *view = &xwayland_view->view;
 	struct wlr_xwayland_surface *xsurface = view->wlr_xwayland_surface;
-	struct wlr_surface_state *surface_state = &xsurface->surface->current;
+	struct wlr_surface_state *state = &xsurface->surface->current;
 
-	if (view->swayc->instructions->length) {
+	if (view->container->node.instruction) {
+		get_geometry(view, &view->geometry);
 		transaction_notify_view_ready_by_size(view,
-				surface_state->width, surface_state->height);
-	} else if (container_is_floating(view->swayc)) {
-		view_update_size(view, surface_state->width, surface_state->height);
+				state->width, state->height);
+	} else {
+		struct wlr_box new_geo;
+		get_geometry(view, &new_geo);
+		struct sway_container *con = view->container;
+
+		if ((new_geo.width != con->content_width ||
+					new_geo.height != con->content_height) &&
+				container_is_floating(con)) {
+			// A floating view has unexpectedly sent a new size
+			// eg. The Firefox "Save As" dialog when downloading a file
+			desktop_damage_view(view);
+			view_update_size(view, new_geo.width, new_geo.height);
+			memcpy(&view->geometry, &new_geo, sizeof(struct wlr_box));
+			desktop_damage_view(view);
+			transaction_commit_dirty();
+		} else {
+			memcpy(&view->geometry, &new_geo, sizeof(struct wlr_box));
+		}
 	}
 
 	view_damage_from(view);
@@ -309,13 +367,16 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&xwayland_view->request_fullscreen.link);
 	wl_list_remove(&xwayland_view->request_move.link);
 	wl_list_remove(&xwayland_view->request_resize.link);
+	wl_list_remove(&xwayland_view->request_activate.link);
 	wl_list_remove(&xwayland_view->set_title.link);
 	wl_list_remove(&xwayland_view->set_class.link);
+	wl_list_remove(&xwayland_view->set_role.link);
 	wl_list_remove(&xwayland_view->set_window_type.link);
 	wl_list_remove(&xwayland_view->set_hints.link);
+	wl_list_remove(&xwayland_view->set_decorations.link);
 	wl_list_remove(&xwayland_view->map.link);
 	wl_list_remove(&xwayland_view->unmap.link);
-	view_destroy(&xwayland_view->view);
+	view_begin_destroy(&xwayland_view->view);
 }
 
 static void handle_unmap(struct wl_listener *listener, void *data) {
@@ -356,15 +417,8 @@ static void handle_map(struct wl_listener *listener, void *data) {
 	xwayland_view->commit.notify = handle_commit;
 
 	// Put it back into the tree
-	view_map(view, xsurface->surface);
+	view_map(view, xsurface->surface, xsurface->fullscreen, false);
 
-	if (xsurface->fullscreen) {
-		container_set_fullscreen(view->swayc, true);
-		struct sway_container *ws = container_parent(view->swayc, C_WORKSPACE);
-		arrange_windows(ws);
-	} else {
-		arrange_windows(view->swayc->parent);
-	}
 	transaction_commit_dirty();
 }
 
@@ -379,13 +433,14 @@ static void handle_request_configure(struct wl_listener *listener, void *data) {
 			ev->width, ev->height);
 		return;
 	}
-	if (container_is_floating(view->swayc)) {
-		configure(view, view->swayc->current.view_x,
-				view->swayc->current.view_y, ev->width, ev->height);
+	if (container_is_floating(view->container)) {
+		configure(view, view->container->current.content_x,
+				view->container->current.content_y, ev->width, ev->height);
 	} else {
-		configure(view, view->swayc->current.view_x,
-				view->swayc->current.view_y, view->swayc->current.view_width,
-				view->swayc->current.view_height);
+		configure(view, view->container->current.content_x,
+				view->container->current.content_y,
+				view->container->current.content_width,
+				view->container->current.content_height);
 	}
 }
 
@@ -397,10 +452,9 @@ static void handle_request_fullscreen(struct wl_listener *listener, void *data) 
 	if (!xsurface->mapped) {
 		return;
 	}
-	container_set_fullscreen(view->swayc, xsurface->fullscreen);
+	container_set_fullscreen(view->container, xsurface->fullscreen);
 
-	struct sway_container *output = container_parent(view->swayc, C_OUTPUT);
-	arrange_windows(output);
+	arrange_workspace(view->container->workspace);
 	transaction_commit_dirty();
 }
 
@@ -412,11 +466,11 @@ static void handle_request_move(struct wl_listener *listener, void *data) {
 	if (!xsurface->mapped) {
 		return;
 	}
-	if (!container_is_floating(view->swayc)) {
+	if (!container_is_floating(view->container)) {
 		return;
 	}
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	seat_begin_move(seat, view->swayc, seat->last_button);
+	struct sway_seat *seat = input_manager_current_seat();
+	seat_begin_move_floating(seat, view->container, seat->last_button);
 }
 
 static void handle_request_resize(struct wl_listener *listener, void *data) {
@@ -427,12 +481,26 @@ static void handle_request_resize(struct wl_listener *listener, void *data) {
 	if (!xsurface->mapped) {
 		return;
 	}
-	if (!container_is_floating(view->swayc)) {
+	if (!container_is_floating(view->container)) {
 		return;
 	}
 	struct wlr_xwayland_resize_event *e = data;
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	seat_begin_resize(seat, view->swayc, seat->last_button, e->edges);
+	struct sway_seat *seat = input_manager_current_seat();
+	seat_begin_resize_floating(seat, view->container,
+			seat->last_button, e->edges);
+}
+
+static void handle_request_activate(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_view *xwayland_view =
+		wl_container_of(listener, xwayland_view, request_activate);
+	struct sway_view *view = &xwayland_view->view;
+	struct wlr_xwayland_surface *xsurface = view->wlr_xwayland_surface;
+	if (!xsurface->mapped) {
+		return;
+	}
+	view_request_activate(view);
+
+	transaction_commit_dirty();
 }
 
 static void handle_set_title(struct wl_listener *listener, void *data) {
@@ -450,6 +518,17 @@ static void handle_set_title(struct wl_listener *listener, void *data) {
 static void handle_set_class(struct wl_listener *listener, void *data) {
 	struct sway_xwayland_view *xwayland_view =
 		wl_container_of(listener, xwayland_view, set_class);
+	struct sway_view *view = &xwayland_view->view;
+	struct wlr_xwayland_surface *xsurface = view->wlr_xwayland_surface;
+	if (!xsurface->mapped) {
+		return;
+	}
+	view_execute_criteria(view);
+}
+
+static void handle_set_role(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_view *xwayland_view =
+		wl_container_of(listener, xwayland_view, set_role);
 	struct sway_view *view = &xwayland_view->view;
 	struct wlr_xwayland_surface *xsurface = view->wlr_xwayland_surface;
 	if (!xsurface->mapped) {
@@ -527,6 +606,10 @@ void handle_xwayland_surface(struct wl_listener *listener, void *data) {
 		&xwayland_view->request_fullscreen);
 	xwayland_view->request_fullscreen.notify = handle_request_fullscreen;
 
+	wl_signal_add(&xsurface->events.request_activate,
+		&xwayland_view->request_activate);
+	xwayland_view->request_activate.notify = handle_request_activate;
+
 	wl_signal_add(&xsurface->events.request_move,
 		&xwayland_view->request_move);
 	xwayland_view->request_move.notify = handle_request_move;
@@ -541,12 +624,19 @@ void handle_xwayland_surface(struct wl_listener *listener, void *data) {
 	wl_signal_add(&xsurface->events.set_class, &xwayland_view->set_class);
 	xwayland_view->set_class.notify = handle_set_class;
 
+	wl_signal_add(&xsurface->events.set_role, &xwayland_view->set_role);
+	xwayland_view->set_role.notify = handle_set_role;
+
 	wl_signal_add(&xsurface->events.set_window_type,
 			&xwayland_view->set_window_type);
 	xwayland_view->set_window_type.notify = handle_set_window_type;
 
 	wl_signal_add(&xsurface->events.set_hints, &xwayland_view->set_hints);
 	xwayland_view->set_hints.notify = handle_set_hints;
+
+	wl_signal_add(&xsurface->events.set_decorations,
+			&xwayland_view->set_decorations);
+	xwayland_view->set_decorations.notify = handle_set_decorations;
 
 	wl_signal_add(&xsurface->events.unmap, &xwayland_view->unmap);
 	xwayland_view->unmap.notify = handle_unmap;

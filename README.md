@@ -1,18 +1,13 @@
 # sway
 
 [**English**](https://github.com/swaywm/sway/blob/master/README.md#sway--) - [日本語](https://github.com/swaywm/sway/blob/master/README.ja.md#sway--) - [Deutsch](https://github.com/swaywm/sway/blob/master/README.de.md#sway--) - [Ελληνικά](https://github.com/swaywm/sway/blob/master/README.el.md#sway--) - [Français](https://github.com/swaywm/sway/blob/master/README.fr.md#sway--) - [Українська](https://github.com/swaywm/sway/blob/master/README.uk.md#sway--) - [Italiano](https://github.com/swaywm/sway/blob/master/README.it.md#sway--) - [Português](https://github.com/swaywm/sway/blob/master/README.pt.md#sway--) -
-[Русский](https://github.com/swaywm/sway/blob/master/README.ru.md#sway--)
+[Русский](https://github.com/swaywm/sway/blob/master/README.ru.md#sway--) - [Български](https://github.com/swaywm/sway/blob/master/README.bg.md#sway--)
 
 "**S**irCmpwn's **Way**land compositor" is a **work in progress**
 i3-compatible [Wayland](http://wayland.freedesktop.org/) compositor.
 Read the [FAQ](https://github.com/swaywm/sway/wiki). Join the
 [IRC channel](http://webchat.freenode.net/?channels=sway&uio=d4) (#sway on
 irc.freenode.net).
-
-**Notice**: You are viewing the **unstable** and **unsupported** master branch
-of sway, where work is ongoing to port it to
-[wlroots](https://github.com/swaywm/wlroots). The supported branch is the 0.15
-branch, and end users are encouraged to use the stable releases cut from it.
 
 If you'd like to support sway development, please contribute to [SirCmpwn's
 Patreon page](https://patreon.com/sircmpwn).
@@ -21,14 +16,6 @@ Patreon page](https://patreon.com/sircmpwn).
 
 Releases are signed with [B22DA89A](http://pgp.mit.edu/pks/lookup?op=vindex&search=0x52CB6609B22DA89A)
 and published [on GitHub](https://github.com/swaywm/sway/releases).
-
-## Status
-
-- [i3 feature support](https://github.com/swaywm/sway/issues/2)
-- [IPC feature support](https://github.com/swaywm/sway/issues/98)
-- [i3bar feature support](https://github.com/swaywm/sway/issues/343)
-- [i3-gaps feature support](https://github.com/swaywm/sway/issues/307)
-- [security features](https://github.com/swaywm/sway/issues/984)
 
 ## Installation
 
@@ -45,26 +32,22 @@ channel or shoot an email to sir@cmpwn.com for advice.
 
 Install dependencies:
 
-* meson
+* meson \*
 * [wlroots](https://github.com/swaywm/wlroots)
 * wayland
-* xwayland
-* libinput >= 1.6.0
-* libcap
+* wayland-protocols \*
 * pcre
-* json-c >= 0.13
+* json-c
 * pango
 * cairo
-* gdk-pixbuf2 *
-* pam **
-* dbus >= 1.10 ***
-* [scdoc](https://git.sr.ht/~sircmpwn/scdoc) (required for man pages)
+* gdk-pixbuf2 \*\*
+* pam (optional: PAM support for swaylock)
+* [scdoc](https://git.sr.ht/~sircmpwn/scdoc) (optional: man pages) \*
+* git \*
 
-_\*Only required for swaybar, swaybg, and swaylock_
+_\*Compile-time dep_
 
-_\*\*Only required for swaylock_
-
-_\*\*\*Only required for tray support_
+_\*\*optional: required for swaybg and swaylock_
 
 Run these commands:
 

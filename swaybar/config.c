@@ -1,39 +1,40 @@
 #define _XOPEN_SOURCE 500
 #include <stdlib.h>
 #include <string.h>
+#include <wlr/util/log.h>
 #include "swaybar/config.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "stringop.h"
+#include "list.h"
 
 uint32_t parse_position(const char *position) {
 	uint32_t horiz = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
 		ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
-	uint32_t vert = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-		ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
 	if (strcmp("top", position) == 0) {
 		return ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | horiz;
 	} else if (strcmp("bottom", position) == 0) {
 		return ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | horiz;
-	} else if (strcmp("left", position) == 0) {
-		return ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | vert;
-	} else if (strcmp("right", position) == 0) {
-		return ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT | vert;
 	} else {
+		wlr_log(WLR_ERROR, "Invalid position: %s, defaulting to bottom", position);
 		return ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | horiz;
 	}
 }
 
-struct swaybar_config *init_config() {
+struct swaybar_config *init_config(void) {
 	struct swaybar_config *config = calloc(1, sizeof(struct swaybar_config));
 	config->status_command = NULL;
 	config->pango_markup = false;
 	config->position = parse_position("bottom");
 	config->font = strdup("monospace 10");
-	config->mode = NULL;
+	config->mode = strdup("dock");
+	config->hidden_state = strdup("hide");
 	config->sep_symbol = NULL;
 	config->strip_workspace_numbers = false;
+	config->strip_workspace_name = false;
 	config->binding_mode_indicator = true;
 	config->wrap_scroll = false;
 	config->workspace_buttons = true;
+	config->bindings = create_list();
 	wl_list_init(&config->outputs);
 
 	/* height */
@@ -69,11 +70,26 @@ struct swaybar_config *init_config() {
 	return config;
 }
 
+static void free_binding(struct swaybar_binding *binding) {
+	if (!binding) {
+		return;
+	}
+	free(binding->command);
+	free(binding);
+}
+
 void free_config(struct swaybar_config *config) {
 	free(config->status_command);
 	free(config->font);
 	free(config->mode);
+	free(config->hidden_state);
 	free(config->sep_symbol);
+	free(config->modifier);
+	for (int i = 0; i < config->bindings->length; i++) {
+		struct swaybar_binding *binding = config->bindings->items[i];
+		free_binding(binding);
+	}
+	list_free(config->bindings);
 	struct config_output *coutput, *tmp;
 	wl_list_for_each_safe(coutput, tmp, &config->outputs, link) {
 		wl_list_remove(&coutput->link);

@@ -1,7 +1,9 @@
-#define _XOPEN_SOURCE 700
+#define _POSIX_C_SOURCE 200809L
+#include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,7 +24,8 @@ int numlen(int n) {
 	if (n == 0) {
 		return 1;
 	}
-	return log10(n) + 1;
+	// Account for the '-' in negative numbers.
+	return log10(abs(n)) + (n > 0 ? 1 : 2);
 }
 
 static struct modifier_key {
@@ -139,39 +142,28 @@ bool parse_boolean(const char *boolean, bool current) {
 	return false;
 }
 
-char* resolve_path(const char* path) {
-	struct stat sb;
-	ssize_t r;
-	int i;
-	char *current = NULL;
-	char *resolved = NULL;
-
-	if(!(current = strdup(path))) {
-		return NULL;
+float parse_float(const char *value) {
+	errno = 0;
+	char *end;
+	float flt = strtof(value, &end);
+	if (*end || errno) {
+		wlr_log(WLR_DEBUG, "Invalid float value '%s', defaulting to NAN", value);
+		return NAN;
 	}
-	for (i = 0; i < 16; ++i) {
-		if (lstat(current, &sb) == -1) {
-			goto failed;
-		}
-		if((sb.st_mode & S_IFMT) != S_IFLNK) {
-			return current;
-		}
-		if (!(resolved = malloc(sb.st_size + 1))) {
-			goto failed;
-		}
-		r = readlink(current, resolved, sb.st_size);
-		if (r == -1 || r > sb.st_size) {
-			goto failed;
-		}
-		resolved[r] = '\0';
-		free(current);
-		current = strdup(resolved);
-		free(resolved);
-		resolved = NULL;
-	}
+	return flt;
+}
 
-failed:
-	free(resolved);
-	free(current);
-	return NULL;
+enum wlr_direction opposite_direction(enum wlr_direction d) {
+	switch (d) {
+	case WLR_DIRECTION_UP:
+		return WLR_DIRECTION_DOWN;
+	case WLR_DIRECTION_DOWN:
+		return WLR_DIRECTION_UP;
+	case WLR_DIRECTION_RIGHT:
+		return WLR_DIRECTION_LEFT;
+	case WLR_DIRECTION_LEFT:
+		return WLR_DIRECTION_RIGHT;
+	}
+	assert(false);
+	return 0;
 }

@@ -9,6 +9,7 @@
 static struct cmd_handler input_handlers[] = {
 	{ "accel_profile", input_cmd_accel_profile },
 	{ "click_method", input_cmd_click_method },
+	{ "drag", input_cmd_drag },
 	{ "drag_lock", input_cmd_drag_lock },
 	{ "dwt", input_cmd_dwt },
 	{ "events", input_cmd_events },
@@ -21,6 +22,7 @@ static struct cmd_handler input_handlers[] = {
 	{ "repeat_delay", input_cmd_repeat_delay },
 	{ "repeat_rate", input_cmd_repeat_rate },
 	{ "scroll_button", input_cmd_scroll_button },
+	{ "scroll_factor", input_cmd_scroll_factor },
 	{ "scroll_method", input_cmd_scroll_method },
 	{ "tap", input_cmd_tap },
 	{ "tap_button_map", input_cmd_tap_button_map },
@@ -66,7 +68,15 @@ struct cmd_results *cmd_input(int argc, char **argv) {
 			input_handlers, sizeof(input_handlers));
 	}
 
-	free_input_config(config->handler_context.input_config);
+	if (!res || res->status == CMD_SUCCESS) {
+		struct input_config *ic =
+			store_input_config(config->handler_context.input_config);
+
+		input_manager_apply_input_config(ic);
+	} else {
+		free_input_config(config->handler_context.input_config);
+	}
+
 	config->handler_context.input_config = NULL;
 
 	return res;

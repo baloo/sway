@@ -3,6 +3,7 @@
 #include "sway/config.h"
 #include "sway/commands.h"
 #include "sway/input/input-manager.h"
+#include "util.h"
 
 struct cmd_results *seat_cmd_fallback(int argc, char **argv) {
 	struct cmd_results *error = NULL;
@@ -16,17 +17,11 @@ struct cmd_results *seat_cmd_fallback(int argc, char **argv) {
 	}
 	struct seat_config *new_config =
 		new_seat_config(current_seat_config->name);
+		
+	new_config->fallback = parse_boolean(argv[0], false);
 
-	if (strcasecmp(argv[0], "true") == 0) {
-		new_config->fallback = 1;
-	} else if (strcasecmp(argv[0], "false") == 0) {
-		new_config->fallback = 0;
-	} else {
-		free_seat_config(new_config);
-		return cmd_results_new(CMD_INVALID, "fallback",
-			"Expected 'fallback <true|false>'");
+	if (!config->validating) {
+		apply_seat_config(new_config);
 	}
-
-	apply_seat_config(new_config);
 	return cmd_results_new(CMD_SUCCESS, NULL, NULL);
 }

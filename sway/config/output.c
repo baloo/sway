@@ -9,6 +9,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include "sway/config.h"
 #include "sway/output.h"
+#include "sway/tree/root.h"
 #include "log.h"
 
 int output_name_cmp(const void *item, const void *data) {
@@ -173,23 +174,25 @@ void terminate_swaybg(pid_t pid) {
 	}
 }
 
-void apply_output_config(struct output_config *oc, struct sway_container *output) {
-	assert(output->type == C_OUTPUT);
-
-	struct wlr_output_layout *output_layout =
-		root_container.sway_root->output_layout;
-	struct wlr_output *wlr_output = output->sway_output->wlr_output;
+void apply_output_config(struct output_config *oc, struct sway_output *output) {
+	struct wlr_output *wlr_output = output->wlr_output;
 
 	if (oc && oc->enabled == 0) {
-		struct sway_output *sway_output = output->sway_output;
-		if (output->sway_output->bg_pid != 0) {
-			terminate_swaybg(output->sway_output->bg_pid);
-			output->sway_output->bg_pid = 0;
+		if (output->enabled) {
+			if (output->bg_pid != 0) {
+				terminate_swaybg(output->bg_pid);
+				output->bg_pid = 0;
+			}
+			output_disable(output);
+			wlr_output_layout_remove(root->output_layout, wlr_output);
 		}
-		container_destroy(output);
-		sway_output->swayc = NULL;
-		wlr_output_layout_remove(root_container.sway_root->output_layout,
-			wlr_output);
+		wlr_output_enable(wlr_output, false);
+		return;
+	} else if (!output->enabled) {
+		if (!oc || oc->dpms_state != DPMS_OFF) {
+			wlr_output_enable(wlr_output, true);
+		}
+		output_enable(output, oc);
 		return;
 	}
 
@@ -197,6 +200,10 @@ void apply_output_config(struct output_config *oc, struct sway_container *output
 		wlr_log(WLR_DEBUG, "Set %s mode to %dx%d (%f GHz)", oc->name, oc->width,
 			oc->height, oc->refresh_rate);
 		set_mode(wlr_output, oc->width, oc->height, oc->refresh_rate);
+	} else if (!wl_list_empty(&wlr_output->modes)) {
+		struct wlr_output_mode *mode =
+			wl_container_of(wlr_output->modes.prev, mode, link);
+		wlr_output_set_mode(wlr_output, mode);
 	}
 	if (oc && oc->scale > 0) {
 		wlr_log(WLR_DEBUG, "Set %s scale to %f", oc->name, oc->scale);
@@ -210,50 +217,50 @@ void apply_output_config(struct output_config *oc, struct sway_container *output
 	// Find position for it
 	if (oc && (oc->x != -1 || oc->y != -1)) {
 		wlr_log(WLR_DEBUG, "Set %s position to %d, %d", oc->name, oc->x, oc->y);
-		wlr_output_layout_add(output_layout, wlr_output, oc->x, oc->y);
+		wlr_output_layout_add(root->output_layout, wlr_output, oc->x, oc->y);
 	} else {
-		wlr_output_layout_add_auto(output_layout, wlr_output);
+		wlr_output_layout_add_auto(root->output_layout, wlr_output);
 	}
 
 	int output_i;
-	for (output_i = 0; output_i < root_container.children->length; ++output_i) {
-		if (root_container.children->items[output_i] == output) {
+	for (output_i = 0; output_i < root->outputs->length; ++output_i) {
+		if (root->outputs->items[output_i] == output) {
 			break;
 		}
 	}
 
-	if (oc && oc->background) {
-		if (output->sway_output->bg_pid != 0) {
-			terminate_swaybg(output->sway_output->bg_pid);
-		}
-
+	if (output->bg_pid != 0) {
+		terminate_swaybg(output->bg_pid);
+	}
+	if (oc && oc->background && config->swaybg_command) {
 		wlr_log(WLR_DEBUG, "Setting background for output %d to %s",
 				output_i, oc->background);
 
-		size_t len = snprintf(NULL, 0, "%s %d %s %s %s",
-				config->swaybg_command ? config->swaybg_command : "swaybg",
-				output_i, oc->background, oc->background_option,
+		size_t len = snprintf(NULL, 0, "%s %d \"%s\" %s %s",
+				config->swaybg_command, output_i, oc->background,
+				oc->background_option,
 				oc->background_fallback ? oc->background_fallback : "");
 		char *command = malloc(len + 1);
 		if (!command) {
 			wlr_log(WLR_DEBUG, "Unable to allocate swaybg command");
 			return;
 		}
-		snprintf(command, len + 1, "%s %d %s %s %s",
-				config->swaybg_command ? config->swaybg_command : "swaybg",
-				output_i, oc->background, oc->background_option,
+		snprintf(command, len + 1, "%s %d \"%s\" %s %s",
+				config->swaybg_command, output_i, oc->background,
+				oc->background_option,
 				oc->background_fallback ? oc->background_fallback : "");
 		wlr_log(WLR_DEBUG, "-> %s", command);
 
 		char *const cmd[] = { "sh", "-c", command, NULL };
-		output->sway_output->bg_pid = fork();
-		if (output->sway_output->bg_pid == 0) {
+		output->bg_pid = fork();
+		if (output->bg_pid == 0) {
 			execvp(cmd[0], cmd);
 		} else {
 			free(command);
 		}
 	}
-	if (oc && oc->dpms_state != DPMS_IGNORE) {
+
+	if (oc) {
 		switch (oc->dpms_state) {
 		case DPMS_ON:
 			wlr_log(WLR_DEBUG, "Turning on screen");
@@ -290,21 +297,10 @@ void apply_output_config_to_outputs(struct output_config *oc) {
 	bool wildcard = strcmp(oc->name, "*") == 0;
 	char id[128];
 	struct sway_output *sway_output;
-	wl_list_for_each(sway_output, &root_container.sway_root->outputs, link) {
+	wl_list_for_each(sway_output, &root->all_outputs, link) {
 		char *name = sway_output->wlr_output->name;
 		output_get_identifier(id, sizeof(id), sway_output);
 		if (wildcard || !strcmp(name, oc->name) || !strcmp(id, oc->name)) {
-			if (!sway_output->swayc) {
-				if (!oc->enabled) {
-					if (!wildcard) {
-						break;
-					}
-					continue;
-				}
-
-				output_enable(sway_output);
-			}
-
 			struct output_config *current = oc;
 			if (wildcard) {
 				struct output_config *tmp = get_output_config(name, id);
@@ -312,7 +308,7 @@ void apply_output_config_to_outputs(struct output_config *oc) {
 					current = tmp;
 				}
 			}
-			apply_output_config(current, sway_output->swayc);
+			apply_output_config(current, sway_output);
 
 			if (!wildcard) {
 				// Stop looking if the output config isn't applicable to all
@@ -330,6 +326,7 @@ void free_output_config(struct output_config *oc) {
 	free(oc->name);
 	free(oc->background);
 	free(oc->background_option);
+	free(oc->background_fallback);
 	free(oc);
 }
 
@@ -350,11 +347,10 @@ static void default_output_config(struct output_config *oc,
 
 void create_default_output_configs(void) {
 	struct sway_output *sway_output;
-	wl_list_for_each(sway_output, &root_container.sway_root->outputs, link) {
+	wl_list_for_each(sway_output, &root->all_outputs, link) {
 		char *name = sway_output->wlr_output->name;
 		struct output_config *oc = new_output_config(name);
 		default_output_config(oc, sway_output->wlr_output);
 		list_add(config->output_configs, oc);
 	}
 }
-

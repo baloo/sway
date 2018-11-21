@@ -1,7 +1,7 @@
 #define _XOPEN_SOURCE 500
 #include <assert.h>
+#include <errno.h>
 #include <pwd.h>
-#include <security/pam_appl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -9,66 +9,17 @@
 #include <xkbcommon/xkbcommon.h>
 #include "swaylock/swaylock.h"
 #include "swaylock/seat.h"
+#include "loop.h"
 #include "unicode.h"
-
-static int function_conversation(int num_msg, const struct pam_message **msg,
-		struct pam_response **resp, void *data) {
-	struct swaylock_password *pw = data;
-	/* PAM expects an array of responses, one for each message */
-	struct pam_response *pam_reply = calloc(
-			num_msg, sizeof(struct pam_response));
-	*resp = pam_reply;
-	for (int i = 0; i < num_msg; ++i) {
-		switch (msg[i]->msg_style) {
-		case PAM_PROMPT_ECHO_OFF:
-		case PAM_PROMPT_ECHO_ON:
-			pam_reply[i].resp = strdup(pw->buffer); // PAM clears and frees this
-			break;
-		case PAM_ERROR_MSG:
-		case PAM_TEXT_INFO:
-			break;
-		}
-	}
-	return PAM_SUCCESS;
-}
 
 void clear_password_buffer(struct swaylock_password *pw) {
 	// Use volatile keyword so so compiler can't optimize this out.
 	volatile char *buffer = pw->buffer;
 	volatile char zero = '\0';
-	for (size_t i = 0; i < sizeof(buffer); ++i) {
+	for (size_t i = 0; i < sizeof(pw->buffer); ++i) {
 		buffer[i] = zero;
 	}
 	pw->len = 0;
-}
-
-static bool attempt_password(struct swaylock_password *pw) {
-	struct passwd *passwd = getpwuid(getuid());
-	char *username = passwd->pw_name;
-	const struct pam_conv local_conversation = {
-		function_conversation, pw
-	};
-	pam_handle_t *local_auth_handle = NULL;
-	int pam_err;
-	// TODO: only call pam_start once. keep the same handle the whole time
-	if ((pam_err = pam_start("swaylock", username,
-					&local_conversation, &local_auth_handle)) != PAM_SUCCESS) {
-		wlr_log(WLR_ERROR, "PAM returned error %d", pam_err);
-	}
-	if ((pam_err = pam_authenticate(local_auth_handle, 0)) != PAM_SUCCESS) {
-		wlr_log(WLR_ERROR, "pam_authenticate failed");
-		goto fail;
-	}
-	// TODO: only call pam_end once we succeed at authing. refresh tokens beforehand
-	if ((pam_err = pam_end(local_auth_handle, pam_err)) != PAM_SUCCESS) {
-		wlr_log(WLR_ERROR, "pam_end failed");
-		goto fail;
-	}
-	clear_password_buffer(pw);
-	return true;
-fail:
-	clear_password_buffer(pw);
-	return false;
 }
 
 static bool backspace(struct swaylock_password *pw) {
@@ -90,6 +41,43 @@ static void append_ch(struct swaylock_password *pw, uint32_t codepoint) {
 	pw->len += utf8_size;
 }
 
+static void clear_indicator(void *data) {
+	struct swaylock_state *state = data;
+	state->clear_indicator_timer = NULL;
+	state->auth_state = AUTH_STATE_IDLE;
+	damage_state(state);
+}
+
+static void schedule_indicator_clear(struct swaylock_state *state) {
+	if (state->clear_indicator_timer) {
+		loop_remove_timer(state->eventloop, state->clear_indicator_timer);
+	}
+	state->clear_indicator_timer = loop_add_timer(
+			state->eventloop, 3000, clear_indicator, state);
+}
+
+static void clear_password(void *data) {
+	struct swaylock_state *state = data;
+	state->clear_password_timer = NULL;
+	state->auth_state = AUTH_STATE_CLEAR;
+	clear_password_buffer(&state->password);
+	damage_state(state);
+	schedule_indicator_clear(state);
+}
+
+static void schedule_password_clear(struct swaylock_state *state) {
+	if (state->clear_password_timer) {
+		loop_remove_timer(state->eventloop, state->clear_password_timer);
+	}
+	state->clear_password_timer = loop_add_timer(
+			state->eventloop, 10000, clear_password, state);
+}
+
+static void handle_preverify_timeout(void *data) {
+	struct swaylock_state *state = data;
+	state->verify_password_timer = NULL;
+}
+
 void swaylock_handle_key(struct swaylock_state *state,
 		xkb_keysym_t keysym, uint32_t codepoint) {
 	switch (keysym) {
@@ -101,7 +89,21 @@ void swaylock_handle_key(struct swaylock_state *state,
 
 		state->auth_state = AUTH_STATE_VALIDATING;
 		damage_state(state);
-		while (wl_display_dispatch(state->display) != -1 && state->run_display) {
+
+		// We generally want to wait until all surfaces are showing the
+		// "verifying" state before we go and verify the password, because
+		// verifying it is a blocking operation. However, if the surface is on
+		// an output with DPMS off then it won't update, so we set a timer.
+		state->verify_password_timer = loop_add_timer(
+				state->eventloop, 50, handle_preverify_timeout, state);
+
+		while (state->run_display && state->verify_password_timer) {
+			errno = 0;
+			if (wl_display_flush(state->display) == -1 && errno != EAGAIN) {
+				break;
+			}
+			loop_poll(state->eventloop);
+
 			bool ok = 1;
 			struct swaylock_surface *surface;
 			wl_list_for_each(surface, &state->surfaces, link) {
@@ -121,6 +123,7 @@ void swaylock_handle_key(struct swaylock_state *state,
 		}
 		state->auth_state = AUTH_STATE_INVALID;
 		damage_state(state);
+		schedule_indicator_clear(state);
 		break;
 	case XKB_KEY_Delete:
 	case XKB_KEY_BackSpace:
@@ -130,11 +133,14 @@ void swaylock_handle_key(struct swaylock_state *state,
 			state->auth_state = AUTH_STATE_CLEAR;
 		}
 		damage_state(state);
+		schedule_indicator_clear(state);
+		schedule_password_clear(state);
 		break;
 	case XKB_KEY_Escape:
 		clear_password_buffer(&state->password);
 		state->auth_state = AUTH_STATE_CLEAR;
 		damage_state(state);
+		schedule_indicator_clear(state);
 		break;
 	case XKB_KEY_Caps_Lock:
 		/* The state is getting active after this
@@ -142,6 +148,8 @@ void swaylock_handle_key(struct swaylock_state *state,
 		state->xkb.caps_lock = !state->xkb.caps_lock;
 		state->auth_state = AUTH_STATE_INPUT_NOP;
 		damage_state(state);
+		schedule_indicator_clear(state);
+		schedule_password_clear(state);
 		break;
 	case XKB_KEY_Shift_L:
 	case XKB_KEY_Shift_R:
@@ -155,12 +163,15 @@ void swaylock_handle_key(struct swaylock_state *state,
 	case XKB_KEY_Super_R:
 		state->auth_state = AUTH_STATE_INPUT_NOP;
 		damage_state(state);
+		schedule_indicator_clear(state);
+		schedule_password_clear(state);
 		break;
 	case XKB_KEY_u:
 		if (state->xkb.control) {
 			clear_password_buffer(&state->password);
 			state->auth_state = AUTH_STATE_CLEAR;
 			damage_state(state);
+			schedule_indicator_clear(state);
 			break;
 		}
 		// fallthrough
@@ -169,6 +180,8 @@ void swaylock_handle_key(struct swaylock_state *state,
 			append_ch(&state->password, codepoint);
 			state->auth_state = AUTH_STATE_INPUT;
 			damage_state(state);
+			schedule_indicator_clear(state);
+			schedule_password_clear(state);
 		}
 		break;
 	}

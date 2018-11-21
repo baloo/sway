@@ -1,4 +1,4 @@
-#define _XOPEN_SOURCE 500
+#define _POSIX_C_SOURCE 200809
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -18,57 +18,28 @@
 
 // Returns error object, or NULL if check succeeds.
 struct cmd_results *checkarg(int argc, const char *name, enum expected_args type, int val) {
-	struct cmd_results *error = NULL;
+	const char *error_name = NULL;
 	switch (type) {
-	case EXPECTED_MORE_THAN:
-		if (argc > val) {
-			return NULL;
-		}
-		error = cmd_results_new(CMD_INVALID, name, "Invalid %s command "
-			"(expected more than %d argument%s, got %d)",
-			name, val, (char*[2]){"s", ""}[argc==1], argc);
-		break;
 	case EXPECTED_AT_LEAST:
-		if (argc >= val) {
-			return NULL;
+		if (argc < val) {
+			error_name = "at least ";
 		}
-		error = cmd_results_new(CMD_INVALID, name, "Invalid %s command "
-			"(expected at least %d argument%s, got %d)",
-			name, val, (char*[2]){"s", ""}[argc==1], argc);
 		break;
-	case EXPECTED_LESS_THAN:
-		if (argc  < val) {
-			return NULL;
-		};
-		error = cmd_results_new(CMD_INVALID, name, "Invalid %s command "
-			"(expected less than %d argument%s, got %d)",
-			name, val, (char*[2]){"s", ""}[argc==1], argc);
+	case EXPECTED_AT_MOST:
+		if (argc > val) {
+			error_name = "at most ";
+		}
 		break;
 	case EXPECTED_EQUAL_TO:
-		if (argc == val) {
-			return NULL;
-		};
-		error = cmd_results_new(CMD_INVALID, name, "Invalid %s command "
-			"(expected %d arguments, got %d)", name, val, argc);
-		break;
+		if (argc != val) {
+			error_name = "";
+		}
 	}
-	return error;
-}
-
-void apply_input_config(struct input_config *input) {
-	int i;
-	i = list_seq_find(config->input_configs, input_identifier_cmp, input->identifier);
-	if (i >= 0) {
-		// merge existing config
-		struct input_config *ic = config->input_configs->items[i];
-		merge_input_config(ic, input);
-		free_input_config(input);
-		input = ic;
-	} else {
-		list_add(config->input_configs, input);
-	}
-
-	input_manager_apply_input_config(input_manager, input);
+	return error_name ?
+		cmd_results_new(CMD_INVALID, name, "Invalid %s command "
+				"(expected %s%d argument%s, got %d)",
+				name, error_name, val, val != 1 ? "s" : "", argc)
+		: NULL;
 }
 
 void apply_seat_config(struct seat_config *seat_config) {
@@ -84,7 +55,7 @@ void apply_seat_config(struct seat_config *seat_config) {
 		list_add(config->seat_configs, seat_config);
 	}
 
-	input_manager_apply_seat_config(input_manager, seat_config);
+	input_manager_apply_seat_config(seat_config);
 }
 
 /* Keep alphabetized */
@@ -93,8 +64,10 @@ static struct cmd_handler handlers[] = {
 	{ "bar", cmd_bar },
 	{ "bindcode", cmd_bindcode },
 	{ "bindsym", cmd_bindsym },
+	{ "client.background", cmd_client_noop },
 	{ "client.focused", cmd_client_focused },
 	{ "client.focused_inactive", cmd_client_focused_inactive },
+	{ "client.placeholder", cmd_client_noop },
 	{ "client.unfocused", cmd_client_unfocused },
 	{ "client.urgent", cmd_client_urgent },
 	{ "default_border", cmd_default_border },
@@ -106,6 +79,7 @@ static struct cmd_handler handlers[] = {
 	{ "floating_modifier", cmd_floating_modifier },
 	{ "focus", cmd_focus },
 	{ "focus_follows_mouse", cmd_focus_follows_mouse },
+	{ "focus_on_window_activation", cmd_focus_on_window_activation },
 	{ "focus_wrapping", cmd_focus_wrapping },
 	{ "font", cmd_font },
 	{ "for_window", cmd_for_window },
@@ -118,12 +92,17 @@ static struct cmd_handler handlers[] = {
 	{ "input", cmd_input },
 	{ "mode", cmd_mode },
 	{ "mouse_warping", cmd_mouse_warping },
+	{ "new_float", cmd_default_floating_border },
+	{ "new_window", cmd_default_border },
 	{ "no_focus", cmd_no_focus },
 	{ "output", cmd_output },
+	{ "popup_during_fullscreen", cmd_popup_during_fullscreen },
 	{ "seat", cmd_seat },
 	{ "set", cmd_set },
 	{ "show_marks", cmd_show_marks },
+	{ "smart_borders", cmd_smart_borders },
 	{ "smart_gaps", cmd_smart_gaps },
+	{ "tiling_drag", cmd_tiling_drag },
 	{ "workspace", cmd_workspace },
 	{ "workspace_auto_back_and_forth", cmd_ws_auto_back_and_forth },
 };
@@ -139,6 +118,7 @@ static struct cmd_handler config_handlers[] = {
 /* Runtime-only commands. Keep alphabetized */
 static struct cmd_handler command_handlers[] = {
 	{ "border", cmd_border },
+	{ "create_output", cmd_create_output },
 	{ "exit", cmd_exit },
 	{ "floating", cmd_floating },
 	{ "fullscreen", cmd_fullscreen },
@@ -146,6 +126,7 @@ static struct cmd_handler command_handlers[] = {
 	{ "layout", cmd_layout },
 	{ "mark", cmd_mark },
 	{ "move", cmd_move },
+	{ "nop", cmd_nop },
 	{ "opacity", cmd_opacity },
 	{ "reload", cmd_reload },
 	{ "rename", cmd_rename },
@@ -208,7 +189,31 @@ struct cmd_handler *find_handler(char *line, struct cmd_handler *cmd_handlers,
 	return res;
 }
 
-struct cmd_results *execute_command(char *_exec, struct sway_seat *seat) {
+static void set_config_node(struct sway_node *node) {
+	config->handler_context.node = node;
+	config->handler_context.container = NULL;
+	config->handler_context.workspace = NULL;
+
+	if (node == NULL) {
+		return;
+	}
+
+	switch (node->type) {
+	case N_CONTAINER:
+		config->handler_context.container = node->sway_container;
+		config->handler_context.workspace = node->sway_container->workspace;
+		break;
+	case N_WORKSPACE:
+		config->handler_context.workspace = node->sway_workspace;
+		break;
+	case N_ROOT:
+	case N_OUTPUT:
+		break;
+	}
+}
+
+struct cmd_results *execute_command(char *_exec, struct sway_seat *seat,
+		struct sway_container *con) {
 	// Even though this function will process multiple commands we will only
 	// return the last error, if any (for now). (Since we have access to an
 	// error string we could e.g. concatenate all errors there.)
@@ -221,10 +226,19 @@ struct cmd_results *execute_command(char *_exec, struct sway_seat *seat) {
 
 	if (seat == NULL) {
 		// passing a NULL seat means we just pick the default seat
-		seat = input_manager_get_default_seat(input_manager);
+		seat = input_manager_get_default_seat();
 		if (!sway_assert(seat, "could not find a seat to run the command on")) {
 			return NULL;
 		}
+	}
+
+	// This is the container or workspace which this command will run on.
+	// Ignored if the command string contains criteria.
+	struct sway_node *node;
+	if (con) {
+		node = &con->node;
+	} else {
+		node = seat_get_focus_inactive(seat, &root->node);
 	}
 
 	config->handler_context.seat = seat;
@@ -289,14 +303,7 @@ struct cmd_results *execute_command(char *_exec, struct sway_seat *seat) {
 			}
 
 			if (!config->handler_context.using_criteria) {
-				// without criteria, the command acts upon the focused
-				// container
-				config->handler_context.current_container =
-					seat_get_focus_inactive(seat, &root_container);
-				if (!sway_assert(config->handler_context.current_container,
-						"could not get focus-inactive for root container")) {
-					return NULL;
-				}
+				set_config_node(node);
 				struct cmd_results *res = handler->handle(argc-1, argv+1);
 				if (res->status != CMD_SUCCESS) {
 					free_argv(argc, argv);
@@ -310,7 +317,7 @@ struct cmd_results *execute_command(char *_exec, struct sway_seat *seat) {
 			} else {
 				for (int i = 0; i < views->length; ++i) {
 					struct sway_view *view = views->items[i];
-					config->handler_context.current_container = view->swayc;
+					set_config_node(&view->container->node);
 					struct cmd_results *res = handler->handle(argc-1, argv+1);
 					if (res->status != CMD_SUCCESS) {
 						free_argv(argc, argv);
@@ -346,12 +353,14 @@ struct cmd_results *config_command(char *exec) {
 	struct cmd_results *results = NULL;
 	int argc;
 	char **argv = split_args(exec, &argc);
+
+	// Check for empty lines
 	if (!argc) {
 		results = cmd_results_new(CMD_SUCCESS, NULL, NULL);
 		goto cleanup;
 	}
 
-	// Start block
+	// Check for the start of a block
 	if (argc > 1 && strcmp(argv[argc - 1], "{") == 0) {
 		char *block = join_args(argv, argc - 1);
 		results = cmd_results_new(CMD_BLOCK, block, NULL);
@@ -359,35 +368,66 @@ struct cmd_results *config_command(char *exec) {
 		goto cleanup;
 	}
 
-	// Endblock
+	// Check for the end of a block
 	if (strcmp(argv[argc - 1], "}") == 0) {
 		results = cmd_results_new(CMD_BLOCK_END, NULL, NULL);
 		goto cleanup;
 	}
-	wlr_log(WLR_INFO, "handling config command '%s'", exec);
+
+	// Make sure the command is not stored in a variable
+	if (*argv[0] == '$') {
+		argv[0] = do_var_replacement(argv[0]);
+		char *temp = join_args(argv, argc);
+		free_argv(argc, argv);
+		argv = split_args(temp, &argc);
+		free(temp);
+		if (!argc) {
+			results = cmd_results_new(CMD_SUCCESS, NULL, NULL);
+			goto cleanup;
+		}
+	}
+
+	// Determine the command handler
+	wlr_log(WLR_INFO, "Config command: %s", exec);
 	struct cmd_handler *handler = find_handler(argv[0], NULL, 0);
-	if (!handler) {
+	if (!handler || !handler->handle) {
 		char *input = argv[0] ? argv[0] : "(empty)";
-		results = cmd_results_new(CMD_INVALID, input, "Unknown/invalid command");
+		char *error = handler
+			? "This command is shimmed, but unimplemented"
+			: "Unknown/invalid command";
+		results = cmd_results_new(CMD_INVALID, input, error);
 		goto cleanup;
 	}
-	int i;
-	// Var replacement, for all but first argument of set
-	// TODO commands
-	for (i = handler->handle == cmd_set ? 2 : 1; i < argc; ++i) {
-		argv[i] = do_var_replacement(argv[i]);
+
+	// Do variable replacement
+	if (handler->handle == cmd_set && argc > 1 && *argv[1] == '$') {
+		// Escape the variable name so it does not get replaced by one shorter
+		char *temp = calloc(1, strlen(argv[1]) + 2);
+		temp[0] = '$';
+		strcpy(&temp[1], argv[1]);
+		free(argv[1]);
+		argv[1] = temp;
+	}
+	char *command = do_var_replacement(join_args(argv, argc));
+	wlr_log(WLR_INFO, "After replacement: %s", command);
+	free_argv(argc, argv);
+	argv = split_args(command, &argc);
+	free(command);
+
+	// Strip quotes and unescape the string
+	for (int i = handler->handle == cmd_set ? 2 : 1; i < argc; ++i) {
+		if (handler->handle != cmd_exec && handler->handle != cmd_exec_always
+				&& handler->handle != cmd_bindsym
+				&& handler->handle != cmd_bindcode
+				&& handler->handle != cmd_set
+				&& (*argv[i] == '\"' || *argv[i] == '\'')) {
+			strip_quotes(argv[i]);
+		}
 		unescape_string(argv[i]);
 	}
-	// Strip quotes for first argument.
-	// TODO This part needs to be handled much better
-	if (argc>1 && (*argv[1] == '\"' || *argv[1] == '\'')) {
-		strip_quotes(argv[1]);
-	}
-	if (handler->handle) {
-		results = handler->handle(argc-1, argv+1);
-	} else {
-		results = cmd_results_new(CMD_INVALID, argv[0], "This command is shimmed, but unimplemented");
-	}
+
+	// Run command
+	results = handler->handle(argc - 1, argv + 1);
 
 cleanup:
 	free_argv(argc, argv);
@@ -405,11 +445,6 @@ struct cmd_results *config_subcommand(char **argv, int argc,
 	if (!handler) {
 		char *input = argv[0] ? argv[0] : "(empty)";
 		return cmd_results_new(CMD_INVALID, input, "Unknown/invalid command");
-	}
-	// Strip quotes for first argument.
-	// TODO This part needs to be handled much better
-	if (argc > 1 && (*argv[1] == '\"' || *argv[1] == '\'')) {
-		strip_quotes(argv[1]);
 	}
 	if (handler->handle) {
 		return handler->handle(argc - 1, argv + 1);

@@ -5,12 +5,14 @@
 #include "sway/config.h"
 #include "sway/ipc-json.h"
 #include "sway/tree/container.h"
+#include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
 #include "sway/output.h"
 #include "sway/input/input-manager.h"
 #include "sway/input/seat.h"
 #include <wlr/types/wlr_box.h>
 #include <wlr/types/wlr_output.h>
+#include <xkbcommon/xkbcommon.h>
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 
 static const char *ipc_json_layout_description(enum sway_container_layout l) {
@@ -23,15 +25,25 @@ static const char *ipc_json_layout_description(enum sway_container_layout l) {
 		return "tabbed";
 	case L_STACKED:
 		return "stacked";
-	case L_FLOATING:
-		return "floating";
 	case L_NONE:
 		break;
 	}
 	return "none";
 }
 
-json_object *ipc_json_get_version() {
+static const char *ipc_json_orientation_description(enum sway_container_layout l) {
+	if (l == L_VERT) {
+		return "vertical";
+	}
+
+	if (l == L_HORIZ) {
+		return "horizontal";
+	}
+
+	return "none";
+}
+
+json_object *ipc_json_get_version(void) {
 	int major = 0, minor = 0, patch = 0;
 	json_object *version = json_object_new_object();
 
@@ -47,20 +59,25 @@ json_object *ipc_json_get_version() {
 	return version;
 }
 
-static json_object *ipc_json_create_rect(struct sway_container *c) {
+static json_object *ipc_json_create_rect(struct wlr_box *box) {
 	json_object *rect = json_object_new_object();
 
-	json_object_object_add(rect, "x", json_object_new_int((int32_t)c->x));
-	json_object_object_add(rect, "y", json_object_new_int((int32_t)c->y));
-	json_object_object_add(rect, "width", json_object_new_int((int32_t)c->width));
-	json_object_object_add(rect, "height", json_object_new_int((int32_t)c->height));
+	json_object_object_add(rect, "x", json_object_new_int(box->x));
+	json_object_object_add(rect, "y", json_object_new_int(box->y));
+	json_object_object_add(rect, "width", json_object_new_int(box->width));
+	json_object_object_add(rect, "height", json_object_new_int(box->height));
 
 	return rect;
 }
 
-static void ipc_json_describe_root(struct sway_container *root, json_object *object) {
+static json_object *ipc_json_create_empty_rect(void) {
+	struct wlr_box empty = {0, 0, 0, 0};
+
+	return ipc_json_create_rect(&empty);
+}
+
+static void ipc_json_describe_root(struct sway_root *root, json_object *object) {
 	json_object_object_add(object, "type", json_object_new_string("root"));
-	json_object_object_add(object, "layout", json_object_new_string("splith"));
 }
 
 static const char *ipc_json_get_output_transform(enum wl_output_transform transform) {
@@ -85,17 +102,15 @@ static const char *ipc_json_get_output_transform(enum wl_output_transform transf
 	return NULL;
 }
 
-static void ipc_json_describe_output(struct sway_container *container,
+static void ipc_json_describe_output(struct sway_output *output,
 		json_object *object) {
-	struct wlr_output *wlr_output = container->sway_output->wlr_output;
-	json_object_object_add(object, "type",
-			json_object_new_string("output"));
-	json_object_object_add(object, "active",
-			json_object_new_boolean(true));
-	json_object_object_add(object, "primary",
-			json_object_new_boolean(false));
-	json_object_object_add(object, "layout",
-			json_object_new_string("output"));
+	struct wlr_output *wlr_output = output->wlr_output;
+	json_object_object_add(object, "type", json_object_new_string("output"));
+	json_object_object_add(object, "active", json_object_new_boolean(true));
+	json_object_object_add(object, "primary", json_object_new_boolean(false));
+	json_object_object_add(object, "layout", json_object_new_string("output"));
+	json_object_object_add(object, "orientation",
+			json_object_new_string(ipc_json_orientation_description(L_NONE)));
 	json_object_object_add(object, "make",
 			json_object_new_string(wlr_output->make));
 	json_object_object_add(object, "model",
@@ -104,26 +119,13 @@ static void ipc_json_describe_output(struct sway_container *container,
 			json_object_new_string(wlr_output->serial));
 	json_object_object_add(object, "scale",
 			json_object_new_double(wlr_output->scale));
-	json_object_object_add(object, "refresh",
-			json_object_new_int(wlr_output->refresh));
 	json_object_object_add(object, "transform",
 		json_object_new_string(
 			ipc_json_get_output_transform(wlr_output->transform)));
 
-	struct sway_seat *seat = input_manager_get_default_seat(input_manager);
-	const char *ws = NULL;
-	if (seat) {
-		struct sway_container *focus =
-			seat_get_focus_inactive(seat, container);
-		if (focus && focus->type != C_WORKSPACE) {
-			focus = container_parent(focus, C_WORKSPACE);
-		}
-		if (focus) {
-			ws = focus->name;
-		}
-	}
+	struct sway_workspace *ws = output_get_active_workspace(output);
 	json_object_object_add(object, "current_workspace",
-			json_object_new_string(ws));
+			json_object_new_string(ws->name));
 
 	json_object *modes_array = json_object_new_array();
 	struct wlr_output_mode *mode;
@@ -139,7 +141,28 @@ static void ipc_json_describe_output(struct sway_container *container,
 	}
 
 	json_object_object_add(object, "modes", modes_array);
-	json_object_object_add(object, "layout", json_object_new_string("output"));
+
+	json_object *current_mode_object = json_object_new_object();
+	json_object_object_add(current_mode_object, "width",
+		json_object_new_int(wlr_output->width));
+	json_object_object_add(current_mode_object, "height",
+		json_object_new_int(wlr_output->height));
+	json_object_object_add(current_mode_object, "refresh",
+		json_object_new_int(wlr_output->refresh));
+	json_object_object_add(object, "current_mode", current_mode_object);
+
+	struct sway_node *parent = node_get_parent(&output->node);
+	struct wlr_box parent_box = {0, 0, 0, 0};
+
+	if (parent != NULL) {
+		node_get_box(parent, &parent_box);
+	}
+
+	if (parent_box.width != 0 && parent_box.height != 0) {
+		double percent = ((double)output->width / parent_box.width)
+				* ((double)output->height / parent_box.height);
+		json_object_object_add(object, "percent", json_object_new_double(percent));
+	}
 }
 
 json_object *ipc_json_describe_disabled_output(struct sway_output *output) {
@@ -159,117 +182,288 @@ json_object *ipc_json_describe_disabled_output(struct sway_output *output) {
 			json_object_new_string(wlr_output->serial));
 	json_object_object_add(object, "modes", json_object_new_array());
 
+	json_object_object_add(object, "percent", NULL);
+
 	return object;
 }
 
-static void ipc_json_describe_workspace(struct sway_container *workspace,
+static void ipc_json_describe_workspace(struct sway_workspace *workspace,
 		json_object *object) {
 	int num = isdigit(workspace->name[0]) ? atoi(workspace->name) : -1;
 
 	json_object_object_add(object, "num", json_object_new_int(num));
-	json_object_object_add(object, "output", workspace->parent ?
-			json_object_new_string(workspace->parent->name) : NULL);
+	json_object_object_add(object, "output", workspace->output ?
+			json_object_new_string(workspace->output->wlr_output->name) : NULL);
 	json_object_object_add(object, "type", json_object_new_string("workspace"));
 	json_object_object_add(object, "urgent",
-			json_object_new_boolean(workspace->sway_workspace->urgent));
-	json_object_object_add(object, "representation", workspace->formatted_title ?
-			json_object_new_string(workspace->formatted_title) : NULL);
+			json_object_new_boolean(workspace->urgent));
+	json_object_object_add(object, "representation", workspace->representation ?
+			json_object_new_string(workspace->representation) : NULL);
 
 	const char *layout = ipc_json_layout_description(workspace->layout);
 	json_object_object_add(object, "layout", json_object_new_string(layout));
 
+	const char *orientation = ipc_json_orientation_description(workspace->layout);
+	json_object_object_add(object, "orientation", json_object_new_string(orientation));
+
 	// Floating
 	json_object *floating_array = json_object_new_array();
-	struct sway_container *floating = workspace->sway_workspace->floating;
-	for (int i = 0; i < floating->children->length; ++i) {
-		struct sway_container *floater = floating->children->items[i];
-		json_object_array_add(floating_array, ipc_json_describe_container_recursive(floater));
+	for (int i = 0; i < workspace->floating->length; ++i) {
+		struct sway_container *floater = workspace->floating->items[i];
+		json_object_array_add(floating_array,
+				ipc_json_describe_node_recursive(&floater->node));
 	}
 	json_object_object_add(object, "floating_nodes", floating_array);
 }
 
+static const char *describe_container_border(enum sway_container_border border) {
+	switch (border) {
+	case B_NONE:
+		return "none";
+	case B_PIXEL:
+		return "pixel";
+	case B_NORMAL:
+		return "normal";
+	case B_CSD:
+		return "csd";
+	}
+	return "unknown";
+}
+
 static void ipc_json_describe_view(struct sway_container *c, json_object *object) {
-	json_object_object_add(object, "name",
-			c->name ? json_object_new_string(c->name) : NULL);
-	json_object_object_add(object, "type", json_object_new_string("con"));
+	json_object_object_add(object, "pid", json_object_new_int(c->view->pid));
 
-	if (c->parent) {
-		json_object_object_add(object, "layout",
-			json_object_new_string(ipc_json_layout_description(c->layout)));
+	const char *app_id = view_get_app_id(c->view);
+	json_object_object_add(object, "app_id",
+			app_id ? json_object_new_string(app_id) : NULL);
+
+	json_object *marks = json_object_new_array();
+	list_t *con_marks = c->marks;
+	for (int i = 0; i < con_marks->length; ++i) {
+		json_object_array_add(marks, json_object_new_string(con_marks->items[i]));
 	}
 
-	bool urgent = c->type == C_VIEW ?
-		view_is_urgent(c->sway_view) : container_has_urgent_child(c);
-	json_object_object_add(object, "urgent", json_object_new_boolean(urgent));
+	json_object_object_add(object, "marks", marks);
 
-	if (c->type == C_VIEW) {
-		json_object *marks = json_object_new_array();
-		list_t *view_marks = c->sway_view->marks;
-		for (int i = 0; i < view_marks->length; ++i) {
-			json_object_array_add(marks, json_object_new_string(view_marks->items[i]));
+	struct wlr_box window_box = {
+		c->content_x - c->x,
+		(c->current.border == B_PIXEL) ? c->current.border_thickness : 0,
+		c->content_width,
+		c->content_height
+	};
+
+	json_object_object_add(object, "window_rect", ipc_json_create_rect(&window_box));
+
+	struct wlr_box deco_box = {0, 0, 0, 0};
+
+	if (c->current.border == B_NORMAL) {
+		deco_box.width = c->width;
+		deco_box.height = c->content_y - c->y;
+	}
+
+	json_object_object_add(object, "deco_rect", ipc_json_create_rect(&deco_box));
+
+	struct wlr_box geometry = {0, 0, c->view->natural_width, c->view->natural_height};
+	json_object_object_add(object, "geometry", ipc_json_create_rect(&geometry));
+
+#if HAVE_XWAYLAND
+	if (c->view->type == SWAY_VIEW_XWAYLAND) {
+		json_object_object_add(object, "window",
+				json_object_new_int(view_get_x11_window_id(c->view)));
+
+		json_object *window_props = json_object_new_object();
+
+		const char *class = view_get_class(c->view);
+		if (class) {
+			json_object_object_add(window_props, "class", json_object_new_string(class));
 		}
-		json_object_object_add(object, "marks", marks);
+		const char *instance = view_get_instance(c->view);
+		if (instance) {
+			json_object_object_add(window_props, "instance", json_object_new_string(instance));
+		}
+		if (c->title) {
+			json_object_object_add(window_props, "title", json_object_new_string(c->title));
+		}
+
+		// the transient_for key is always present in i3's output
+		uint32_t parent_id = view_get_x11_parent_id(c->view);
+		json_object_object_add(window_props, "transient_for",
+				parent_id ? json_object_new_int(parent_id) : NULL);
+
+		const char *role = view_get_window_role(c->view);
+		if (role) {
+			json_object_object_add(window_props, "window_role", json_object_new_string(role));
+		}
+
+		json_object_object_add(object, "window_properties", window_props);
+	}
+#endif
+}
+
+static void ipc_json_describe_container(struct sway_container *c, json_object *object) {
+	json_object_object_add(object, "name",
+			c->title ? json_object_new_string(c->title) : NULL);
+	json_object_object_add(object, "type",
+			json_object_new_string(container_is_floating(c) ? "floating_con" : "con"));
+
+	json_object_object_add(object, "layout",
+		json_object_new_string(ipc_json_layout_description(c->layout)));
+
+	json_object_object_add(object, "orientation",
+			json_object_new_string(ipc_json_orientation_description(c->layout)));
+
+	bool urgent = c->view ?
+		view_is_urgent(c->view) : container_has_urgent_child(c);
+	json_object_object_add(object, "urgent", json_object_new_boolean(urgent));
+	json_object_object_add(object, "sticky", json_object_new_boolean(c->is_sticky));
+
+	struct sway_node *parent = node_get_parent(&c->node);
+	struct wlr_box parent_box = {0, 0, 0, 0};
+
+	if (parent != NULL) {
+		node_get_box(parent, &parent_box);
+	}
+
+	if (parent_box.width != 0 && parent_box.height != 0) {
+		double percent = ((double)c->width / parent_box.width)
+				* ((double)c->height / parent_box.height);
+		json_object_object_add(object, "percent", json_object_new_double(percent));
+	}
+
+	json_object_object_add(object, "border",
+			json_object_new_string(describe_container_border(c->current.border)));
+	json_object_object_add(object, "current_border_width",
+			json_object_new_int(c->current.border_thickness));
+	json_object_object_add(object, "floating_nodes", json_object_new_array());
+
+	if (c->view) {
+		ipc_json_describe_view(c, object);
 	}
 }
 
-static void focus_inactive_children_iterator(struct sway_container *c, void *data) {
-	json_object *focus = data;
-	json_object_array_add(focus, json_object_new_int(c->id));
+struct focus_inactive_data {
+	struct sway_node *node;
+	json_object *object;
+};
+
+static void focus_inactive_children_iterator(struct sway_node *node,
+		void *_data) {
+	struct focus_inactive_data *data = _data;
+	json_object *focus = data->object;
+	if (data->node == &root->node) {
+		struct sway_output *output = node_get_output(node);
+		if (output == NULL) {
+			return;
+		}
+		size_t id = output->node.id;
+		int len = json_object_array_length(focus);
+		for (int i = 0; i < len; ++i) {
+			if ((size_t) json_object_get_int(json_object_array_get_idx(focus, i)) == id) {
+				return;
+			}
+		}
+		node = &output->node;
+	} else if (node_get_parent(node) != data->node) {
+		return;
+	}
+	json_object_array_add(focus, json_object_new_int(node->id));
 }
 
-json_object *ipc_json_describe_container(struct sway_container *c) {
-	if (!(sway_assert(c, "Container must not be null."))) {
-		return NULL;
-	}
-
-	struct sway_seat *seat = input_manager_get_default_seat(input_manager);
-	bool focused = seat_get_focus(seat) == c;
+json_object *ipc_json_describe_node(struct sway_node *node) {
+	struct sway_seat *seat = input_manager_get_default_seat();
+	bool focused = seat_get_focus(seat) == node;
 
 	json_object *object = json_object_new_object();
+	char *name = node_get_name(node);
 
-	json_object_object_add(object, "id", json_object_new_int((int)c->id));
+	struct wlr_box box;
+	node_get_box(node, &box);
+	json_object_object_add(object, "id", json_object_new_int((int)node->id));
 	json_object_object_add(object, "name",
-			c->name ? json_object_new_string(c->name) : NULL);
-	json_object_object_add(object, "rect", ipc_json_create_rect(c));
-	json_object_object_add(object, "focused",
-			json_object_new_boolean(focused));
+			name ? json_object_new_string(name) : NULL);
+	json_object_object_add(object, "rect", ipc_json_create_rect(&box));
+	json_object_object_add(object, "focused", json_object_new_boolean(focused));
 
 	json_object *focus = json_object_new_array();
-	seat_focus_inactive_children_for_each(seat, c,
-		focus_inactive_children_iterator, focus);
+	struct focus_inactive_data data = {
+		.node = node,
+		.object = focus,
+	};
+	seat_for_each_node(seat, focus_inactive_children_iterator, &data);
 	json_object_object_add(object, "focus", focus);
 
-	switch (c->type) {
-	case C_ROOT:
-		ipc_json_describe_root(c, object);
+	// set default values to be compatible with i3
+	json_object_object_add(object, "border",
+			json_object_new_string(describe_container_border(B_NONE)));
+	json_object_object_add(object, "current_border_width", json_object_new_int(0));
+	json_object_object_add(object, "layout",
+			json_object_new_string(ipc_json_layout_description(L_HORIZ)));
+	json_object_object_add(object, "orientation",
+			json_object_new_string(ipc_json_orientation_description(L_HORIZ)));
+	json_object_object_add(object, "percent", NULL);
+	json_object_object_add(object, "window_rect", ipc_json_create_empty_rect());
+	json_object_object_add(object, "deco_rect", ipc_json_create_empty_rect());
+	json_object_object_add(object, "geometry", ipc_json_create_empty_rect());
+	json_object_object_add(object, "window", NULL);
+	json_object_object_add(object, "urgent", json_object_new_boolean(false));
+	json_object_object_add(object, "floating_nodes", json_object_new_array());
+	json_object_object_add(object, "sticky", json_object_new_boolean(false));
+
+	switch (node->type) {
+	case N_ROOT:
+		ipc_json_describe_root(root, object);
 		break;
-	case C_OUTPUT:
-		ipc_json_describe_output(c, object);
+	case N_OUTPUT:
+		ipc_json_describe_output(node->sway_output, object);
 		break;
-	case C_CONTAINER:
-	case C_VIEW:
-		ipc_json_describe_view(c, object);
+	case N_CONTAINER:
+		ipc_json_describe_container(node->sway_container, object);
 		break;
-	case C_WORKSPACE:
-		ipc_json_describe_workspace(c, object);
-		break;
-	case C_TYPES:
-	default:
+	case N_WORKSPACE:
+		ipc_json_describe_workspace(node->sway_workspace, object);
 		break;
 	}
 
 	return object;
 }
 
-json_object *ipc_json_describe_container_recursive(struct sway_container *c) {
-	json_object *object = ipc_json_describe_container(c);
+json_object *ipc_json_describe_node_recursive(struct sway_node *node) {
+	json_object *object = ipc_json_describe_node(node);
 	int i;
 
 	json_object *children = json_object_new_array();
-	if (c->type != C_VIEW && c->children) {
-		for (i = 0; i < c->children->length; ++i) {
-			json_object_array_add(children, ipc_json_describe_container_recursive(c->children->items[i]));
+	switch (node->type) {
+	case N_ROOT:
+		for (i = 0; i < root->outputs->length; ++i) {
+			struct sway_output *output = root->outputs->items[i];
+			json_object_array_add(children,
+					ipc_json_describe_node_recursive(&output->node));
 		}
+		break;
+	case N_OUTPUT:
+		for (i = 0; i < node->sway_output->workspaces->length; ++i) {
+			struct sway_workspace *ws = node->sway_output->workspaces->items[i];
+			json_object_array_add(children,
+					ipc_json_describe_node_recursive(&ws->node));
+		}
+		break;
+	case N_WORKSPACE:
+		for (i = 0; i < node->sway_workspace->tiling->length; ++i) {
+			struct sway_container *con = node->sway_workspace->tiling->items[i];
+			json_object_array_add(children,
+					ipc_json_describe_node_recursive(&con->node));
+		}
+		break;
+	case N_CONTAINER:
+		if (node->sway_container->children) {
+			for (i = 0; i < node->sway_container->children->length; ++i) {
+				struct sway_container *child =
+					node->sway_container->children->items[i];
+				json_object_array_add(children,
+						ipc_json_describe_node_recursive(&child->node));
+			}
+		}
+		break;
 	}
 	json_object_object_add(object, "nodes", children);
 
@@ -310,6 +504,27 @@ json_object *ipc_json_describe_input(struct sway_input_device *device) {
 	json_object_object_add(object, "type",
 		json_object_new_string(describe_device_type(device)));
 
+	if (device->wlr_device->type == WLR_INPUT_DEVICE_KEYBOARD) {
+		struct wlr_keyboard *keyboard = device->wlr_device->keyboard;
+		struct xkb_keymap *keymap = keyboard->keymap;
+		struct xkb_state *state = keyboard->xkb_state;
+		xkb_layout_index_t num_layouts = xkb_keymap_num_layouts(keymap);
+		xkb_layout_index_t layout_idx;
+		for (layout_idx = 0; layout_idx < num_layouts; layout_idx++) {
+			bool is_active =
+				xkb_state_layout_index_is_active(state,
+						layout_idx,
+						XKB_STATE_LAYOUT_EFFECTIVE);
+			if (is_active) {
+				const char *layout =
+					xkb_keymap_layout_get_name(keymap, layout_idx);
+				json_object_object_add(object, "xkb_active_layout_name",
+						json_object_new_string(layout));
+				break;
+			}
+		}
+	}
+
 	return object;
 }
 
@@ -319,7 +534,7 @@ json_object *ipc_json_describe_seat(struct sway_seat *seat) {
 	}
 
 	json_object *object = json_object_new_object();
-	struct sway_container *focus = seat_get_focus(seat);
+	struct sway_node *focus = seat_get_focus(seat);
 
 	json_object_object_add(object, "name",
 		json_object_new_string(seat->wlr_seat->name));
@@ -350,8 +565,8 @@ json_object *ipc_json_describe_bar_config(struct bar_config *bar) {
 			json_object_new_string(bar->hidden_state));
 	json_object_object_add(json, "position",
 			json_object_new_string(bar->position));
-	json_object_object_add(json, "status_command",
-			json_object_new_string(bar->status_command));
+	json_object_object_add(json, "status_command", bar->status_command ?
+			json_object_new_string(bar->status_command) : NULL);
 	json_object_object_add(json, "font",
 			json_object_new_string((bar->font) ? bar->font : config->font));
 	if (bar->separator_symbol) {
@@ -366,6 +581,8 @@ json_object *ipc_json_describe_bar_config(struct bar_config *bar) {
 			json_object_new_boolean(bar->workspace_buttons));
 	json_object_object_add(json, "strip_workspace_numbers",
 			json_object_new_boolean(bar->strip_workspace_numbers));
+	json_object_object_add(json, "strip_workspace_name",
+			json_object_new_boolean(bar->strip_workspace_name));
 	json_object_object_add(json, "binding_mode_indicator",
 			json_object_new_boolean(bar->binding_mode_indicator));
 	json_object_object_add(json, "verbose",
@@ -458,6 +675,22 @@ json_object *ipc_json_describe_bar_config(struct bar_config *bar) {
 	}
 
 	json_object_object_add(json, "colors", colors);
+
+	if (bar->bindings->length > 0) {
+		json_object *bindings = json_object_new_array();
+		for (int i = 0; i < bar->bindings->length; ++i) {
+			struct bar_binding *binding = bar->bindings->items[i];
+			json_object *bind = json_object_new_object();
+			json_object_object_add(bind, "input_code",
+					json_object_new_int(binding->button));
+			json_object_object_add(bind, "command",
+					json_object_new_string(binding->command));
+			json_object_object_add(bind, "release",
+					json_object_new_boolean(binding->release));
+			json_object_array_add(bindings, bind);
+		}
+		json_object_object_add(json, "bindings", bindings);
+	}
 
 	// Add outputs if defined
 	if (bar->outputs && bar->outputs->length > 0) {

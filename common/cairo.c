@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <cairo/cairo.h>
 #include "cairo.h"
-#ifdef HAVE_GDK_PIXBUF
+#if HAVE_GDK_PIXBUF
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #endif
 
@@ -11,6 +11,22 @@ void cairo_set_source_u32(cairo_t *cairo, uint32_t color) {
 			(color >> (2*8) & 0xFF) / 255.0,
 			(color >> (1*8) & 0xFF) / 255.0,
 			(color >> (0*8) & 0xFF) / 255.0);
+}
+
+cairo_subpixel_order_t to_cairo_subpixel_order(enum wl_output_subpixel subpixel) {
+	switch (subpixel) {
+	case WL_OUTPUT_SUBPIXEL_HORIZONTAL_RGB:
+		return CAIRO_SUBPIXEL_ORDER_RGB;
+	case WL_OUTPUT_SUBPIXEL_HORIZONTAL_BGR:
+		return CAIRO_SUBPIXEL_ORDER_BGR;
+	case WL_OUTPUT_SUBPIXEL_VERTICAL_RGB:
+		return CAIRO_SUBPIXEL_ORDER_VRGB;
+	case WL_OUTPUT_SUBPIXEL_VERTICAL_BGR:
+		return CAIRO_SUBPIXEL_ORDER_VBGR;
+	default:
+		return CAIRO_SUBPIXEL_ORDER_DEFAULT;
+	}
+	return CAIRO_SUBPIXEL_ORDER_DEFAULT;
 }
 
 cairo_surface_t *cairo_image_surface_scale(cairo_surface_t *image,
@@ -30,7 +46,7 @@ cairo_surface_t *cairo_image_surface_scale(cairo_surface_t *image,
 	return new;
 }
 
-#ifdef HAVE_GDK_PIXBUF
+#if HAVE_GDK_PIXBUF
 cairo_surface_t* gdk_cairo_image_surface_create_from_pixbuf(const GdkPixbuf *gdkbuf) {
 	int chan = gdk_pixbuf_get_n_channels(gdkbuf);
 	if (chan < 3) {
@@ -124,4 +140,4 @@ cairo_surface_t* gdk_cairo_image_surface_create_from_pixbuf(const GdkPixbuf *gdk
 	cairo_surface_mark_dirty(cs);
 	return cs;
 }
-#endif //HAVE_GDK_PIXBUF
+#endif // HAVE_GDK_PIXBUF

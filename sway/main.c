@@ -12,10 +12,6 @@
 #include <sys/wait.h>
 #include <sys/un.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <sys/capability.h>
-#include <sys/prctl.h>
-#endif
 #include <wlr/util/log.h>
 #include "sway/commands.h"
 #include "sway/config.h"
@@ -23,16 +19,17 @@
 #include "sway/desktop/transaction.h"
 #include "sway/server.h"
 #include "sway/swaynag.h"
-#include "sway/tree/layout.h"
+#include "sway/tree/root.h"
 #include "sway/ipc-server.h"
 #include "ipc-client.h"
+#include "log.h"
 #include "readline.h"
 #include "stringop.h"
 #include "util.h"
 
 static bool terminate_request = false;
 static int exit_value = 0;
-struct sway_server server;
+struct sway_server server = {0};
 
 void sway_terminate(int exit_code) {
 	terminate_request = true;
@@ -42,11 +39,10 @@ void sway_terminate(int exit_code) {
 }
 
 void sig_handler(int signal) {
-	//close_views(&root_container);
 	sway_terminate(EXIT_SUCCESS);
 }
 
-void detect_raspi() {
+void detect_raspi(void) {
 	bool raspi = false;
 	FILE *f = fopen("/sys/firmware/devicetree/base/model", "r");
 	if (!f) {
@@ -86,7 +82,7 @@ void detect_raspi() {
 	}
 }
 
-void detect_proprietary() {
+void detect_proprietary(int allow_unsupported_gpu) {
 	FILE *f = fopen("/proc/modules", "r");
 	if (!f) {
 		return;
@@ -97,15 +93,30 @@ void detect_proprietary() {
 			break;
 		}
 		if (strstr(line, "nvidia")) {
-			fprintf(stderr, "\x1B[1;31mWarning: Proprietary Nvidia drivers are "
-				"NOT supported. Use Nouveau.\x1B[0m\n");
 			free(line);
+			if (allow_unsupported_gpu) {
+				wlr_log(WLR_ERROR,
+						"!!! Proprietary Nvidia drivers are in use !!!");
+			} else {
+				wlr_log(WLR_ERROR,
+					"Proprietary Nvidia drivers are NOT supported. "
+					"Use Nouveau. To launch sway anyway, launch with "
+					"--my-next-gpu-wont-be-nvidia and DO NOT report issues.");
+				exit(EXIT_FAILURE);
+			}
 			break;
 		}
 		if (strstr(line, "fglrx")) {
-			fprintf(stderr, "\x1B[1;31mWarning: Proprietary AMD drivers do "
-				"NOT support Wayland. Use radeon.\x1B[0m\n");
 			free(line);
+			if (allow_unsupported_gpu) {
+				wlr_log(WLR_ERROR,
+						"!!! Proprietary AMD drivers are in use !!!");
+			} else {
+				wlr_log(WLR_ERROR, "Proprietary AMD drivers do NOT support "
+					"Wayland. Use radeon. To try anyway, launch sway with "
+					"--unsupported-gpu and DO NOT report issues.");
+				exit(EXIT_FAILURE);
+			}
 			break;
 		}
 		free(line);
@@ -121,7 +132,7 @@ void run_as_ipc_client(char *command, char *socket_path) {
 	close(socketfd);
 }
 
-static void log_env() {
+static void log_env(void) {
 	const char *log_vars[] = {
 		"PATH",
 		"LD_LIBRARY_PATH",
@@ -136,7 +147,7 @@ static void log_env() {
 	}
 }
 
-static void log_distro() {
+static void log_distro(void) {
 	const char *paths[] = {
 		"/etc/lsb-release",
 		"/etc/os-release",
@@ -163,7 +174,7 @@ static void log_distro() {
 	}
 }
 
-static void log_kernel() {
+static void log_kernel(void) {
 	FILE *f = popen("uname -a", "r");
 	if (!f) {
 		wlr_log(WLR_INFO, "Unable to determine kernel version");
@@ -182,72 +193,46 @@ static void log_kernel() {
 	pclose(f);
 }
 
-static void executable_sanity_check() {
-#ifdef __linux__
-		struct stat sb;
-		char *exe = realpath("/proc/self/exe", NULL);
-		stat(exe, &sb);
-		// We assume that cap_get_file returning NULL implies ENODATA
-		if (sb.st_mode & (S_ISUID|S_ISGID) && cap_get_file(exe)) {
-			wlr_log(WLR_ERROR,
-				"sway executable has both the s(g)uid bit AND file caps set.");
-			wlr_log(WLR_ERROR,
-				"This is strongly discouraged (and completely broken).");
-			wlr_log(WLR_ERROR,
-				"Please clear one of them (either the suid bit, or the file caps).");
-			wlr_log(WLR_ERROR,
-				"If unsure, strip the file caps.");
-			exit(EXIT_FAILURE);
-		}
-		free(exe);
-#endif
-}
 
-static void drop_permissions(bool keep_caps) {
+static bool drop_permissions(void) {
 	if (getuid() != geteuid() || getgid() != getegid()) {
 		if (setgid(getgid()) != 0) {
-			wlr_log(WLR_ERROR, "Unable to drop root");
-			exit(EXIT_FAILURE);
+			wlr_log(WLR_ERROR, "Unable to drop root, refusing to start");
+			return false;
 		}
 		if (setuid(getuid()) != 0) {
-			wlr_log(WLR_ERROR, "Unable to drop root");
-			exit(EXIT_FAILURE);
+			wlr_log(WLR_ERROR, "Unable to drop root, refusing to start");
+			return false;
 		}
 	}
 	if (setuid(0) != -1) {
-		wlr_log(WLR_ERROR, "Root privileges can be restored.");
-		exit(EXIT_FAILURE);
+		wlr_log(WLR_ERROR, "Unable to drop root (we shouldn't be able to "
+			"restore it after setuid), refusing to start");
+		return false;
 	}
-#ifdef __linux__
-	if (keep_caps) {
-		// Drop every cap except CAP_SYS_PTRACE
-		cap_t caps = cap_init();
-		cap_value_t keep = CAP_SYS_PTRACE;
-		wlr_log(WLR_INFO, "Dropping extra capabilities");
-		if (cap_set_flag(caps, CAP_PERMITTED, 1, &keep, CAP_SET) ||
-			cap_set_flag(caps, CAP_EFFECTIVE, 1, &keep, CAP_SET) ||
-			cap_set_proc(caps)) {
-			wlr_log(WLR_ERROR, "Failed to drop extra capabilities");
-			exit(EXIT_FAILURE);
-		}
-	}
-#endif
+	return true;
 }
 
 void enable_debug_flag(const char *flag) {
-	if (strcmp(flag, "render-tree") == 0) {
-		enable_debug_tree = true;
-	} else if (strncmp(flag, "damage=", 7) == 0) {
-		damage_debug = &flag[7];
-	} else if (strcmp(flag, "txn-debug") == 0) {
-		txn_debug = true;
+	if (strcmp(flag, "damage=highlight") == 0) {
+		debug.damage = DAMAGE_HIGHLIGHT;
+	} else if (strcmp(flag, "damage=rerender") == 0) {
+		debug.damage = DAMAGE_RERENDER;
+	} else if (strcmp(flag, "noatomic") == 0) {
+		debug.noatomic = true;
+	} else if (strcmp(flag, "render-tree") == 0) {
+		debug.render_tree = true;
+	} else if (strcmp(flag, "txn-wait") == 0) {
+		debug.txn_wait = true;
+	} else if (strcmp(flag, "txn-timings") == 0) {
+		debug.txn_timings = true;
 	} else if (strncmp(flag, "txn-timeout=", 12) == 0) {
-		txn_timeout_ms = atoi(&flag[12]);
+		server.txn_timeout_ms = atoi(&flag[12]);
 	}
 }
 
 int main(int argc, char **argv) {
-	static int verbose = 0, debug = 0, validate = 0;
+	static int verbose = 0, debug = 0, validate = 0, allow_unsupported_gpu = 0;
 
 	static struct option long_options[] = {
 		{"help", no_argument, NULL, 'h'},
@@ -257,6 +242,8 @@ int main(int argc, char **argv) {
 		{"version", no_argument, NULL, 'v'},
 		{"verbose", no_argument, NULL, 'V'},
 		{"get-socketpath", no_argument, NULL, 'p'},
+		{"unsupported-gpu", no_argument, NULL, 'u'},
+		{"my-next-gpu-wont-be-nvidia", no_argument, NULL, 'u'},
 		{0, 0, 0, 0}
 	};
 
@@ -273,14 +260,6 @@ int main(int argc, char **argv) {
 		"  -V, --verbose          Enables more verbose logging.\n"
 		"      --get-socketpath   Gets the IPC socket path and prints it, then exits.\n"
 		"\n";
-
-	// Security:
-	unsetenv("LD_PRELOAD");
-#ifdef _LD_LIBRARY_PATH
-	setenv("LD_LIBRARY_PATH", _LD_LIBRARY_PATH, 1);
-#else
-	unsetenv("LD_LIBRARY_PATH");
-#endif
 
 	int c;
 	while (1) {
@@ -306,6 +285,9 @@ int main(int argc, char **argv) {
 		case 'D': // extended debug options
 			enable_debug_flag(optarg);
 			break;
+		case 'u':
+			allow_unsupported_gpu = 1;
+			break;
 		case 'v': // version
 			fprintf(stdout, "sway version " SWAY_VERSION "\n");
 			exit(EXIT_SUCCESS);
@@ -328,7 +310,6 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	// TODO: switch logging over to wlroots?
 	if (debug) {
 		wlr_log_init(WLR_DEBUG, NULL);
 	} else if (verbose || validate) {
@@ -338,11 +319,13 @@ int main(int argc, char **argv) {
 	}
 
 	if (optind < argc) { // Behave as IPC client
-		if(optind != 1) {
+		if (optind != 1) {
 			wlr_log(WLR_ERROR, "Don't use options with the IPC client");
 			exit(EXIT_FAILURE);
 		}
-		drop_permissions(false);
+		if (!drop_permissions()) {
+			exit(EXIT_FAILURE);
+		}
 		char *socket_path = getenv("SWAYSOCK");
 		if (!socket_path) {
 			wlr_log(WLR_ERROR, "Unable to retrieve socket path");
@@ -353,32 +336,20 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 
-	executable_sanity_check();
-	bool suid = false;
-
 	if (!server_privileged_prepare(&server)) {
 		return 1;
 	}
 
-#ifdef __linux__
-	if (getuid() != geteuid() || getgid() != getegid()) {
-		// Retain capabilities after setuid()
-		if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0)) {
-			wlr_log(WLR_ERROR, "Cannot keep caps after setuid()");
-			exit(EXIT_FAILURE);
-		}
-		suid = true;
-	}
-#endif
-
 	log_kernel();
 	log_distro();
-	detect_proprietary();
+	detect_proprietary(allow_unsupported_gpu);
 	detect_raspi();
 
-#ifdef __linux__
-	drop_permissions(suid);
-#endif
+	if (!drop_permissions()) {
+		server_fini(&server);
+		exit(EXIT_FAILURE);
+	}
+
 	// handle SIGTERM signals
 	signal(SIGTERM, sig_handler);
 
@@ -387,7 +358,7 @@ int main(int argc, char **argv) {
 
 	wlr_log(WLR_INFO, "Starting sway version " SWAY_VERSION);
 
-	root_create();
+	root = root_create();
 
 	if (!server_init(&server)) {
 		return 1;
@@ -417,11 +388,12 @@ int main(int argc, char **argv) {
 	}
 
 	config->active = true;
+	load_swaybars();
 	// Execute commands until there are none left
 	wlr_log(WLR_DEBUG, "Running deferred commands");
 	while (config->cmd_queue->length) {
 		char *line = config->cmd_queue->items[0];
-		struct cmd_results *res = execute_command(line, NULL);
+		struct cmd_results *res = execute_command(line, NULL, NULL);
 		if (res->status != CMD_SUCCESS) {
 			wlr_log(WLR_ERROR, "Error on line '%s': %s", line, res->error);
 		}
@@ -442,7 +414,8 @@ int main(int argc, char **argv) {
 	wlr_log(WLR_INFO, "Shutting down sway");
 
 	server_fini(&server);
-	root_destroy();
+	root_destroy(root);
+	root = NULL;
 
 	if (config) {
 		free_config(config);

@@ -1,44 +1,46 @@
 #define _POSIX_C_SOURCE 200809L
 #include <json-c/json.h>
 #include <linux/input-event-codes.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
+#include "swaybar/bar.h"
 #include "swaybar/config.h"
+#include "swaybar/i3bar.h"
+#include "swaybar/input.h"
 #include "swaybar/status_line.h"
 
-void i3bar_block_free(struct i3bar_block *block) {
-	if (!block) {
+void i3bar_block_unref(struct i3bar_block *block) {
+	if (block == NULL) {
 		return;
 	}
-	wl_list_remove(&block->link);
-	free(block->full_text);
-	free(block->short_text);
-	free(block->align);
-	free(block->name);
-	free(block->instance);
-	free(block->color);
-	free(block);
+
+	if (--block->ref_count == 0) {
+		free(block->full_text);
+		free(block->short_text);
+		free(block->align);
+		free(block->name);
+		free(block->instance);
+		free(block->color);
+		free(block);
+	}
 }
 
-static bool i3bar_parse_json(struct status_line *status, const char *text) {
+static void i3bar_parse_json(struct status_line *status,
+		struct json_object *json_array) {
 	struct i3bar_block *block, *tmp;
 	wl_list_for_each_safe(block, tmp, &status->blocks, link) {
-		i3bar_block_free(block);
+		wl_list_remove(&block->link);
+		i3bar_block_unref(block);
 	}
-	json_object *results = json_tokener_parse(text);
-	if (!results) {
-		status_error(status, "[failed to parse i3bar json]");
-		return false;
-	}
-	wlr_log(WLR_DEBUG, "Got i3bar json: '%s'", text);
-	for (size_t i = 0; i < json_object_array_length(results); ++i) {
+	for (size_t i = 0; i < json_object_array_length(json_array); ++i) {
 		json_object *full_text, *short_text, *color, *min_width, *align, *urgent;
 		json_object *name, *instance, *separator, *separator_block_width;
 		json_object *background, *border, *border_top, *border_bottom;
 		json_object *border_left, *border_right, *markup;
-		json_object *json = json_object_array_get_idx(results, i);
+		json_object *json = json_object_array_get_idx(json_array, i);
 		if (!json) {
 			continue;
 		}
@@ -61,6 +63,7 @@ static bool i3bar_parse_json(struct status_line *status, const char *text) {
 		json_object_object_get_ex(json, "border_right", &border_right);
 
 		struct i3bar_block *block = calloc(1, sizeof(struct i3bar_block));
+		block->ref_count = 1;
 		block->full_text = full_text ?
 			strdup(json_object_get_string(full_text)) : NULL;
 		block->short_text = short_text ?
@@ -106,96 +109,160 @@ static bool i3bar_parse_json(struct status_line *status, const char *text) {
 			json_object_get_int(border_right) : 1;
 		wl_list_insert(&status->blocks, &block->link);
 	}
-	json_object_put(results);
-	return true;
 }
 
 bool i3bar_handle_readable(struct status_line *status) {
-	struct i3bar_protocol_state *state = &status->i3bar_state;
+	while (!status->started) { // look for opening bracket
+		for (size_t c = 0; c < status->buffer_index; ++c) {
+			if (status->buffer[c] == '[') {
+				status->started = true;
+				status->buffer_index -= ++c;
+				memmove(status->buffer, &status->buffer[c], status->buffer_index);
+				break;
+			} else if (!isspace(status->buffer[c])) {
+				wlr_log(WLR_DEBUG, "Invalid i3bar json: expected '[' but encountered '%c'",
+						status->buffer[c]);
+				status_error(status, "[invalid i3bar json]");
+				return true;
+			}
+		}
+		if (status->started) {
+			break;
+		}
 
-	char *cur = &state->buffer[state->buffer_index];
-	ssize_t n = read(status->read_fd, cur,
-			state->buffer_size - state->buffer_index);
-	if (n == -1) {
-		status_error(status, "[failed to read from status command]");
-		return false;
-	}
-
-	if (n == (ssize_t)(state->buffer_size - state->buffer_index)) {
-		state->buffer_size = state->buffer_size * 2;
-		char *new_buffer = realloc(state->buffer, state->buffer_size);
-		if (!new_buffer) {
-			free(state->buffer);
-			status_error(status, "[failed to allocate buffer]");
+		errno = 0;
+		ssize_t read_bytes = read(status->read_fd, status->buffer, status->buffer_size);
+		if (read_bytes > -1) {
+			status->buffer_index = read_bytes;
+		} else if (errno == EAGAIN) {
+			return false;
+		} else {
+			status_error(status, "[error reading from status command]");
 			return true;
 		}
-		state->current_node += new_buffer - state->buffer;
-		cur += new_buffer - state->buffer;
-		state->buffer = new_buffer;
 	}
 
-	cur[n] = '\0';
-	bool redraw = false;
-	while (*cur) {
-		if (state->nodes[state->depth] == JSON_NODE_STRING) {
-			if (!state->escape && *cur == '"') {
-				--state->depth;
+	struct json_object *last_object = NULL;
+	struct json_object *test_object;
+	size_t buffer_pos = 0;
+	while (true) {
+		// since the incoming stream is an infinite array
+		// parsing is split into two parts
+		// first, attempt to parse the current object, reading more if the
+		// parser indicates that the current object is incomplete, and failing
+		// if the parser fails
+		// second, look for separating comma, ignoring whitespace, failing if
+		// any other characters are encountered
+		if (status->expecting_comma) {
+			for (; buffer_pos < status->buffer_index; ++buffer_pos) {
+				if (status->buffer[buffer_pos] == ',') {
+					status->expecting_comma = false;
+					++buffer_pos;
+					break;
+				} else if (!isspace(status->buffer[buffer_pos])) {
+					wlr_log(WLR_DEBUG, "Invalid i3bar json: expected ',' but encountered '%c'",
+							status->buffer[buffer_pos]);
+					status_error(status, "[invalid i3bar json]");
+					return true;
+				}
 			}
-			state->escape = !state->escape && *cur == '\\';
+			if (buffer_pos < status->buffer_index) {
+				continue; // look for new object without reading more input
+			}
+			buffer_pos = status->buffer_index = 0;
 		} else {
-			switch (*cur) {
-			case '[':
-				++state->depth;
-				if (state->depth >
-						sizeof(state->nodes) / sizeof(state->nodes[0])) {
-					status_error(status, "[i3bar json too deep]");
-					return false;
+			test_object = json_tokener_parse_ex(status->tokener,
+					&status->buffer[buffer_pos], status->buffer_index - buffer_pos);
+			enum json_tokener_error err = json_tokener_get_error(status->tokener);
+			if (err == json_tokener_success) {
+				if (json_object_get_type(test_object) == json_type_array) {
+					if (last_object) {
+						json_object_put(last_object);
+					}
+					last_object = test_object;
+				} else {
+					json_object_put(test_object);
 				}
-				state->nodes[state->depth] = JSON_NODE_ARRAY;
-				if (state->depth == 1) {
-					state->current_node = cur;
+
+				// in order to print the json for debugging purposes
+				// the last character is temporarily replaced with a null character
+				// (the last character is used in case the buffer is full)
+				char *last_char_pos =
+					&status->buffer[buffer_pos + status->tokener->char_offset - 1];
+				char last_char = *last_char_pos;
+				while (isspace(last_char)) {
+					last_char = *--last_char_pos;
 				}
-				break;
-			case ']':
-				if (state->nodes[state->depth] != JSON_NODE_ARRAY) {
-					status_error(status, "[failed to parse i3bar json]");
-					return false;
+				*last_char_pos = '\0';
+				size_t offset = strspn(&status->buffer[buffer_pos], " \f\n\r\t\v");
+				wlr_log(WLR_DEBUG, "Received i3bar json: '%s%c'",
+						&status->buffer[buffer_pos + offset], last_char);
+				*last_char_pos = last_char;
+
+				buffer_pos += status->tokener->char_offset;
+				status->expecting_comma = true;
+
+				if (buffer_pos < status->buffer_index) {
+					continue; // look for comma without reading more input
 				}
-				--state->depth;
-				if (state->depth == 0) {
-					// cur[1] is valid since cur[0] != '\0'
-					char p = cur[1];
-					cur[1] = '\0';
-					redraw = i3bar_parse_json(
-							status, state->current_node) || redraw;
-					cur[1] = p;
-					memmove(state->buffer, cur,
-							state->buffer_size - (cur - state->buffer));
-					cur = state->buffer;
-					state->current_node = cur + 1;
+				buffer_pos = status->buffer_index = 0;
+			} else if (err == json_tokener_continue) {
+				json_tokener_reset(status->tokener);
+				if (status->buffer_index < status->buffer_size) {
+					// move the object to the start of the buffer
+					status->buffer_index -= buffer_pos;
+					memmove(status->buffer, &status->buffer[buffer_pos],
+							status->buffer_index);
+					buffer_pos = 0;
+				} else {
+					// expand buffer
+					status->buffer_size *= 2;
+					char *new_buffer = realloc(status->buffer, status->buffer_size);
+					if (new_buffer) {
+						status->buffer = new_buffer;
+					} else {
+						free(status->buffer);
+						status_error(status, "[failed to allocate buffer]");
+						return true;
+					}
 				}
-				break;
-			case '"':
-				++state->depth;
-				if (state->depth >
-						sizeof(state->nodes) / sizeof(state->nodes[0])) {
-					status_error(status, "[i3bar json too deep]");
-					return false;
-				}
-				state->nodes[state->depth] = JSON_NODE_STRING;
-				break;
+			} else {
+				char last_char = status->buffer[status->buffer_index - 1];
+				status->buffer[status->buffer_index - 1] = '\0';
+				wlr_log(WLR_DEBUG, "Failed to parse i3bar json - %s: '%s%c'",
+						json_tokener_error_desc(err), &status->buffer[buffer_pos], last_char);
+				status_error(status, "[failed to parse i3bar json]");
+				return true;
 			}
 		}
-		++cur;
+
+		errno = 0;
+		ssize_t read_bytes = read(status->read_fd, &status->buffer[status->buffer_index],
+				status->buffer_size - status->buffer_index);
+		if (read_bytes > -1) {
+			status->buffer_index += read_bytes;
+		} else if (errno == EAGAIN) {
+			break;
+		} else {
+			status_error(status, "[error reading from status command]");
+			return true;
+		}
 	}
-	state->buffer_index = cur - state->buffer;
-	return redraw;
+
+	if (last_object) {
+		wlr_log(WLR_DEBUG, "Rendering last received json");
+		i3bar_parse_json(status, last_object);
+		json_object_put(last_object);
+		return true;
+	} else {
+		return false;
+	}
 }
 
 enum hotspot_event_handling i3bar_block_send_click(struct status_line *status,
 		struct i3bar_block *block, int x, int y, enum x11_button button) {
-	wlr_log(WLR_DEBUG, "block %s clicked", block->name ? block->name : "(nil)");
-	if (!block->name || !status->i3bar_state.click_events) {
+	wlr_log(WLR_DEBUG, "block %s clicked", block->name);
+	if (!block->name || !status->click_events) {
 		return HOTSPOT_PROCESS;
 	}
 
@@ -210,39 +277,11 @@ enum hotspot_event_handling i3bar_block_send_click(struct status_line *status,
 	json_object_object_add(event_json, "button", json_object_new_int(button));
 	json_object_object_add(event_json, "x", json_object_new_int(x));
 	json_object_object_add(event_json, "y", json_object_new_int(y));
-	if (dprintf(status->write_fd, "%s\n",
+	if (dprintf(status->write_fd, "%s%s\n", status->clicked ? "," : "",
 				json_object_to_json_string(event_json)) < 0) {
 		status_error(status, "[failed to write click event]");
 	}
+	status->clicked = true;
 	json_object_put(event_json);
 	return HOTSPOT_IGNORE;
-}
-
-enum x11_button wl_button_to_x11_button(uint32_t button) {
-	switch (button) {
-	case BTN_LEFT:
-		return LEFT;
-	case BTN_MIDDLE:
-		return MIDDLE;
-	case BTN_RIGHT:
-		return RIGHT;
-	case BTN_SIDE:
-		return BACK;
-	case BTN_EXTRA:
-		return FORWARD;
-	default:
-		return NONE;
-	}
-}
-
-enum x11_button wl_axis_to_x11_button(uint32_t axis, wl_fixed_t value) {
-	switch (axis) {
-	case WL_POINTER_AXIS_VERTICAL_SCROLL:
-		return wl_fixed_to_double(value) < 0 ? SCROLL_UP : SCROLL_DOWN;
-	case WL_POINTER_AXIS_HORIZONTAL_SCROLL:
-		return wl_fixed_to_double(value) < 0 ? SCROLL_LEFT : SCROLL_RIGHT;
-	default:
-		wlr_log(WLR_DEBUG, "Unexpected axis value on mouse scroll");
-		return NONE;
-	}
 }

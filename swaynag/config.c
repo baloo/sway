@@ -11,7 +11,7 @@
 #include "util.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
-static char *read_from_stdin() {
+static char *read_from_stdin(void) {
 	char *buffer = NULL;
 	while (!feof(stdin)) {
 		char *line = read_line(stdin);
@@ -180,8 +180,8 @@ int swaynag_parse_options(int argc, char **argv, struct swaynag *swaynag,
 			break;
 		case 'L': // Detailed Button Text
 			if (swaynag) {
-				free(swaynag->details.button_details.text);
-				swaynag->details.button_details.text = strdup(optarg);
+				free(swaynag->details.button_details->text);
+				swaynag->details.button_details->text = strdup(optarg);
 			}
 			break;
 		case 'm': // Message

@@ -15,12 +15,15 @@ static bool parse_opacity(const char *opacity, float *val) {
 
 struct cmd_results *cmd_opacity(int argc, char **argv) {
 	struct cmd_results *error = NULL;
-	if ((error = checkarg(argc, "layout", EXPECTED_EQUAL_TO, 1))) {
+	if ((error = checkarg(argc, "opacity", EXPECTED_EQUAL_TO, 1))) {
 		return error;
 	}
 
-	struct sway_container *con =
-		config->handler_context.current_container;
+	struct sway_container *con = config->handler_context.container;
+
+	if (con == NULL) {
+		return cmd_results_new(CMD_FAILURE, "opacity", "No current container");
+	}
 
 	float opacity = 0.0f;
 

@@ -27,7 +27,7 @@
 #include "sway/criteria.h"
 #include "sway/swaynag.h"
 #include "sway/tree/arrange.h"
-#include "sway/tree/layout.h"
+#include "sway/tree/root.h"
 #include "sway/tree/workspace.h"
 #include "cairo.h"
 #include "pango.h"
@@ -73,8 +73,6 @@ void free_config(struct sway_config *config) {
 
 	memset(&config->handler_context, 0, sizeof(config->handler_context));
 
-	free(config->swaynag_command);
-
 	// TODO: handle all currently unhandled lists as we add implementations
 	if (config->symbols) {
 		for (int i = 0; i < config->symbols->length; ++i) {
@@ -95,7 +93,12 @@ void free_config(struct sway_config *config) {
 		list_free(config->bars);
 	}
 	list_free(config->cmd_queue);
-	list_free(config->workspace_outputs);
+	if (config->workspace_configs) {
+		for (int i = 0; i < config->workspace_configs->length; i++) {
+			free_workspace_config(config->workspace_configs->items[i]);
+		}
+		list_free(config->workspace_configs);
+	}
 	if (config->output_configs) {
 		for (int i = 0; i < config->output_configs->length; i++) {
 			free_output_config(config->output_configs->items[i]);
@@ -131,6 +134,8 @@ void free_config(struct sway_config *config) {
 	free(config->floating_scroll_left_cmd);
 	free(config->floating_scroll_right_cmd);
 	free(config->font);
+	free(config->swaybg_command);
+	free(config->swaynag_command);
 	free((char *)config->current_config_path);
 	free((char *)config->current_config);
 	free(config);
@@ -146,8 +151,7 @@ static void destroy_removed_seats(struct sway_config *old_config,
 		/* Also destroy seats that aren't present in new config */
 		if (new_config && list_seq_find(new_config->seat_configs,
 				seat_name_cmp, seat_config->name) < 0) {
-			seat = input_manager_get_seat(input_manager,
-				seat_config->name);
+			seat = input_manager_get_seat(seat_config->name);
 			seat_destroy(seat);
 		}
 	}
@@ -161,7 +165,7 @@ static void set_color(float dest[static 4], uint32_t color) {
 }
 
 static void config_defaults(struct sway_config *config) {
-	config->swaynag_command = strdup("swaynag");
+	if (!(config->swaynag_command = strdup("swaynag"))) goto cleanup;
 	config->swaynag_config_errors = (struct swaynag_instance){
 		.args = "--type error "
 			"--message 'There are errors in your config file' "
@@ -175,7 +179,7 @@ static void config_defaults(struct sway_config *config) {
 	if (!(config->symbols = create_list())) goto cleanup;
 	if (!(config->modes = create_list())) goto cleanup;
 	if (!(config->bars = create_list())) goto cleanup;
-	if (!(config->workspace_outputs = create_list())) goto cleanup;
+	if (!(config->workspace_configs = create_list())) goto cleanup;
 	if (!(config->criteria = create_list())) goto cleanup;
 	if (!(config->no_focus = create_list())) goto cleanup;
 	if (!(config->input_configs = create_list())) goto cleanup;
@@ -207,6 +211,7 @@ static void config_defaults(struct sway_config *config) {
 	if (!(config->font = strdup("monospace 10"))) goto cleanup;
 	config->font_height = 17; // height of monospace 10
 	config->urgent_timeout = 500;
+	config->popup_during_fullscreen = POPUP_SMART;
 
 	// floating view
 	config->floating_maximum_width = 0;
@@ -215,8 +220,8 @@ static void config_defaults(struct sway_config *config) {
 	config->floating_minimum_height = 50;
 
 	// Flags
-	config->focus_follows_mouse = true;
-	config->mouse_warping = true;
+	config->focus_follows_mouse = FOLLOWS_YES;
+	config->mouse_warping = WARP_OUTPUT;
 	config->focus_wrapping = WRAP_YES;
 	config->validating = false;
 	config->reloading = false;
@@ -225,13 +230,18 @@ static void config_defaults(struct sway_config *config) {
 	config->auto_back_and_forth = false;
 	config->reading = false;
 	config->show_marks = true;
+	config->tiling_drag = true;
 
-	config->edge_gaps = true;
 	config->smart_gaps = false;
 	config->gaps_inner = 0;
-	config->gaps_outer = 0;
+	config->gaps_outer.top = 0;
+	config->gaps_outer.right = 0;
+	config->gaps_outer.bottom = 0;
+	config->gaps_outer.left = 0;
 
 	if (!(config->active_bar_modifiers = create_list())) goto cleanup;
+
+	if (!(config->swaybg_command = strdup("swaybg"))) goto cleanup;
 
 	if (!(config->config_chain = create_list())) goto cleanup;
 	config->current_config_path = NULL;
@@ -243,9 +253,9 @@ static void config_defaults(struct sway_config *config) {
 	config->border_thickness = 2;
 	config->floating_border_thickness = 2;
 	config->hide_edge_borders = E_NONE;
+	config->saved_edge_borders = E_NONE;
 
 	// border colors
-	set_color(config->border_colors.focused.border, 0x4C7899);
 	set_color(config->border_colors.focused.border, 0x4C7899);
 	set_color(config->border_colors.focused.background, 0x285577);
 	set_color(config->border_colors.focused.text, 0xFFFFFFFF);
@@ -381,7 +391,8 @@ bool load_main_config(const char *file, bool is_active, bool validating) {
 	config_defaults(config);
 	config->validating = validating;
 	if (is_active) {
-		wlr_log(WLR_DEBUG, "Performing configuration file reload");
+		wlr_log(WLR_DEBUG, "Performing configuration file %s",
+			validating ? "validation" : "reload");
 		config->reloading = true;
 		config->active = true;
 
@@ -448,6 +459,12 @@ bool load_main_config(const char *file, bool is_active, bool validating) {
 
 	success = success && load_config(path, config,
 			&config->swaynag_config_errors);
+
+	if (validating) {
+		free_config(config);
+		config = old_config;
+		return success;
+	}
 
 	if (is_active) {
 		for (int i = 0; i < config->output_configs->length; i++) {
@@ -570,13 +587,11 @@ static int detect_brace_on_following_line(FILE *file, char *line,
 		char *peeked = NULL;
 		long position = 0;
 		do {
-			wlr_log(WLR_DEBUG, "Peeking line %d", line_number + lines + 1);
 			free(peeked);
 			peeked = peek_line(file, lines, &position);
 			if (peeked) {
 				peeked = strip_whitespace(peeked);
 			}
-			wlr_log(WLR_DEBUG, "Peeked line: `%s`", peeked);
 			lines++;
 		} while (peeked && strlen(peeked) == 0);
 
@@ -681,7 +696,6 @@ bool read_config(FILE *file, struct sway_config *config,
 			free(line);
 			return false;
 		}
-		wlr_log(WLR_DEBUG, "Expanded line: %s", expanded);
 		struct cmd_results *res;
 		if (block && strcmp(block, "<commands>") == 0) {
 			// Special case
@@ -803,39 +817,37 @@ char *do_var_replacement(char *str) {
 // would compare two structs in full, while this method only compares the
 // workspace.
 int workspace_output_cmp_workspace(const void *a, const void *b) {
-	const struct workspace_output *wsa = a, *wsb = b;
+	const struct workspace_config *wsa = a, *wsb = b;
 	return lenient_strcmp(wsa->workspace, wsb->workspace);
 }
 
-static void find_font_height_iterator(struct sway_container *container,
-		void *data) {
+static void find_font_height_iterator(struct sway_container *con, void *data) {
+	size_t amount_below_baseline = con->title_height - con->title_baseline;
+	size_t extended_height = config->font_baseline + amount_below_baseline;
+	if (extended_height > config->font_height) {
+		config->font_height = extended_height;
+	}
+}
+
+static void find_baseline_iterator(struct sway_container *con, void *data) {
 	bool *recalculate = data;
 	if (*recalculate) {
-		container_calculate_title_height(container);
+		container_calculate_title_height(con);
 	}
-	if (container->title_height > config->font_height) {
-		config->font_height = container->title_height;
+	if (con->title_baseline > config->font_baseline) {
+		config->font_baseline = con->title_baseline;
 	}
 }
 
 void config_update_font_height(bool recalculate) {
 	size_t prev_max_height = config->font_height;
 	config->font_height = 0;
+	config->font_baseline = 0;
 
-	container_for_each_descendant(&root_container,
-			find_font_height_iterator, &recalculate);
-
-	// Also consider floating views
-	for (int i = 0; i < root_container.children->length; ++i) {
-		struct sway_container *output = root_container.children->items[i];
-		for (int j = 0; j < output->children->length; ++j) {
-			struct sway_container *ws = output->children->items[j];
-			container_for_each_descendant(ws->sway_workspace->floating,
-					find_font_height_iterator, &recalculate);
-		}
-	}
+	root_for_each_container(find_baseline_iterator, &recalculate);
+	root_for_each_container(find_font_height_iterator, NULL);
 
 	if (config->font_height != prev_max_height) {
-		arrange_windows(&root_container);
+		arrange_root();
 	}
 }

@@ -1,4 +1,5 @@
 #define _XOPEN_SOURCE 500
+#include <ctype.h>
 #include <string.h>
 #include <strings.h>
 #include "log.h"
@@ -6,6 +7,7 @@
 #include "sway/commands.h"
 #include "sway/config.h"
 #include "sway/ipc-server.h"
+#include "sway/output.h"
 #include "sway/tree/container.h"
 #include "sway/tree/workspace.h"
 
@@ -18,21 +20,26 @@ struct cmd_results *cmd_rename(int argc, char **argv) {
 	if ((error = checkarg(argc, "rename", EXPECTED_AT_LEAST, 3))) {
 		return error;
 	}
+	if (!root->outputs->length) {
+		return cmd_results_new(CMD_INVALID, "rename",
+				"Can't run this command while there's no outputs connected.");
+	}
 	if (strcasecmp(argv[0], "workspace") != 0) {
 		return cmd_results_new(CMD_INVALID, "rename", expected_syntax);
 	}
 
 	int argn = 1;
-	struct sway_container *workspace;
+	struct sway_workspace *workspace = NULL;
 
 	if (strcasecmp(argv[1], "to") == 0) {
 		// 'rename workspace to new_name'
-		workspace = config->handler_context.current_container;
-		if (workspace->type != C_WORKSPACE) {
-			workspace = container_parent(workspace, C_WORKSPACE);
-		}
+		workspace = config->handler_context.workspace;
 	} else if (strcasecmp(argv[1], "number") == 0) {
 		// 'rename workspace number x to new_name'
+		if (!isdigit(argv[2][0])) {
+			return cmd_results_new(CMD_INVALID, "rename",
+					"Invalid workspace number '%s'", argv[2]);
+		}
 		workspace = workspace_by_number(argv[2]);
 		while (argn < argc && strcasecmp(argv[argn], "to") != 0) {
 			++argn;
@@ -66,12 +73,13 @@ struct cmd_results *cmd_rename(int argc, char **argv) {
 			strcasecmp(new_name, "next_on_output") == 0 ||
 			strcasecmp(new_name, "prev_on_output") == 0 ||
 			strcasecmp(new_name, "back_and_forth") == 0 ||
-			strcasecmp(new_name, "current") == 0) {
+			strcasecmp(new_name, "current") == 0 ||
+			strcasecmp(new_name, "number") == 0) {
 		free(new_name);
 		return cmd_results_new(CMD_INVALID, "rename",
 				"Cannot use special workspace name '%s'", argv[argn]);
 	}
-	struct sway_container *tmp_workspace = workspace_by_name(new_name);
+	struct sway_workspace *tmp_workspace = workspace_by_name(new_name);
 	if (tmp_workspace) {
 		free(new_name);
 		return cmd_results_new(CMD_INVALID, "rename",
@@ -82,7 +90,7 @@ struct cmd_results *cmd_rename(int argc, char **argv) {
 	free(workspace->name);
 	workspace->name = new_name;
 
-	container_sort_workspaces(workspace->parent);
+	output_sort_workspaces(workspace->output);
 	ipc_event_workspace(NULL, workspace, "rename");
 
 	return cmd_results_new(CMD_SUCCESS, NULL, NULL);

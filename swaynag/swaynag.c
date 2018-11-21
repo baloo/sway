@@ -342,7 +342,11 @@ static const struct wl_registry_listener registry_listener = {
 
 void swaynag_setup(struct swaynag *swaynag) {
 	swaynag->display = wl_display_connect(NULL);
-	assert(swaynag->display);
+	if (!swaynag->display) {
+		sway_abort("Unable to connect to the compositor. "
+				"If your compositor is running, check or set the "
+				"WAYLAND_DISPLAY environment variable.");
+	}
 
 	swaynag->scale = 1;
 	wl_list_init(&swaynag->outputs);
@@ -390,6 +394,10 @@ void swaynag_run(struct swaynag *swaynag) {
 			&& wl_display_dispatch(swaynag->display) != -1) {
 		// This is intentionally left blank
 	}
+
+	if (swaynag->display) {
+		wl_display_disconnect(swaynag->display);
+	}
 }
 
 void swaynag_destroy(struct swaynag *swaynag) {
@@ -404,6 +412,7 @@ void swaynag_destroy(struct swaynag *swaynag) {
 		free(button);
 	}
 	list_free(swaynag->buttons);
+	free(swaynag->details.button_details);
 	free(swaynag->details.message);
 	free(swaynag->details.button_up.text);
 	free(swaynag->details.button_down.text);
@@ -448,9 +457,5 @@ void swaynag_destroy(struct swaynag *swaynag) {
 
 	if (swaynag->shm) {
 		wl_shm_destroy(swaynag->shm);
-	}
-
-	if (swaynag->display) {
-		wl_display_disconnect(swaynag->display);
 	}
 }

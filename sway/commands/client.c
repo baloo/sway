@@ -1,7 +1,13 @@
 #include "log.h"
 #include "sway/commands.h"
 #include "sway/config.h"
+#include "sway/output.h"
 #include "sway/tree/container.h"
+
+static void rebuild_textures_iterator(struct sway_container *con, void *data) {
+	container_update_marks_textures(con);
+	container_update_title_textures(con);
+}
 
 /**
  * Parse the hex string into an integer.
@@ -56,27 +62,36 @@ static struct cmd_results *handle_command(int argc, char **argv,
 
 	if (!parse_color_float(argv[0], class->border)) {
 		return cmd_results_new(CMD_INVALID, cmd_name,
-				"Unable to parse border color");
+				"Unable to parse border color '%s'", argv[0]);
 	}
 
 	if (!parse_color_float(argv[1], class->background)) {
 		return cmd_results_new(CMD_INVALID, cmd_name,
-				"Unable to parse background color");
+				"Unable to parse background color '%s'", argv[1]);
 	}
 
 	if (!parse_color_float(argv[2], class->text)) {
 		return cmd_results_new(CMD_INVALID, cmd_name,
-				"Unable to parse text color");
+				"Unable to parse text color '%s'", argv[2]);
 	}
 
 	if (!parse_color_float(argv[3], class->indicator)) {
 		return cmd_results_new(CMD_INVALID, cmd_name,
-				"Unable to parse indicator color");
+				"Unable to parse indicator color '%s'", argv[3]);
 	}
 
 	if (!parse_color_float(argv[4], class->child_border)) {
 		return cmd_results_new(CMD_INVALID, cmd_name,
-				"Unable to parse child border color");
+				"Unable to parse child border color '%s'", argv[4]);
+	}
+
+	if (config->active) {
+		root_for_each_container(rebuild_textures_iterator, NULL);
+
+		for (int i = 0; i < root->outputs->length; ++i) {
+			struct sway_output *output = root->outputs->items[i];
+			output_damage_whole(output);
+		}
 	}
 
 	return cmd_results_new(CMD_SUCCESS, NULL, NULL);
@@ -96,4 +111,9 @@ struct cmd_results *cmd_client_unfocused(int argc, char **argv) {
 
 struct cmd_results *cmd_client_urgent(int argc, char **argv) {
 	return handle_command(argc, argv, &config->border_colors.urgent, "client.urgent");
+}
+
+struct cmd_results *cmd_client_noop(int argc, char **argv) {
+	wlr_log(WLR_INFO, "Warning: %s is ignored by sway", argv[-1]);
+	return cmd_results_new(CMD_SUCCESS, NULL, NULL);
 }

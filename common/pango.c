@@ -6,66 +6,49 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "cairo.h"
 #include "log.h"
+#include "stringop.h"
 
-int escape_markup_text(const char *src, char *dest, int dest_length) {
-	int length = 0;
+static const char overflow[] = "[buffer overflow]";
+static const int max_chars = 16384;
+
+size_t escape_markup_text(const char *src, char *dest) {
+	size_t length = 0;
+	if (dest) {
+		dest[0] = '\0';
+	}
 
 	while (src[0]) {
 		switch (src[0]) {
 		case '&':
 			length += 5;
-			if (dest && dest_length - length >= 0) {
-				dest += sprintf(dest, "%s", "&amp;");
-			} else {
-				dest_length = -1;
-			}
+			lenient_strcat(dest, "&amp;");
 			break;
 		case '<':
 			length += 4;
-			if (dest && dest_length - length >= 0) {
-				dest += sprintf(dest, "%s", "&lt;");
-			} else {
-				dest_length = -1;
-			}
+			lenient_strcat(dest, "&lt;");
 			break;
 		case '>':
 			length += 4;
-			if (dest && dest_length - length >= 0) {
-				dest += sprintf(dest, "%s", "&gt;");
-			} else {
-				dest_length = -1;
-			}
+			lenient_strcat(dest, "&gt;");
 			break;
 		case '\'':
 			length += 6;
-			if (dest && dest_length - length >= 0) {
-				dest += sprintf(dest, "%s", "&apos;");
-			} else {
-				dest_length = -1;
-			}
+			lenient_strcat(dest, "&apos;");
 			break;
 		case '"':
 			length += 6;
-			if (dest && dest_length - length >= 0) {
-				dest += sprintf(dest, "%s", "&quot;");
-			} else {
-				dest_length = -1;
-			}
+			lenient_strcat(dest, "&quot;");
 			break;
 		default:
-			length += 1;
-			if (dest && dest_length - length >= 0) {
-				*(dest++) = *src;
-			} else {
-				dest_length = -1;
+			if (dest) {
+				dest[length] = *src;
+				dest[length + 1] = '\0';
 			}
+			length += 1;
 		}
 		src++;
-	}
-	// if we could not fit the escaped string in dest, return -1
-	if (dest && dest_length == -1) {
-		return -1;
 	}
 	return length;
 }
@@ -78,7 +61,7 @@ PangoLayout *get_pango_layout(cairo_t *cairo, const char *font,
 		char *buf;
 		GError *error = NULL;
 		if (pango_parse_markup(text, -1, 0, &attrs, &buf, NULL, &error)) {
-			pango_layout_set_markup(layout, buf, -1);
+			pango_layout_set_text(layout, buf, -1);
 			free(buf);
 		} else {
 			wlr_log(WLR_ERROR, "pango_parse_markup '%s' -> error %s", text,
@@ -103,34 +86,41 @@ PangoLayout *get_pango_layout(cairo_t *cairo, const char *font,
 }
 
 void get_text_size(cairo_t *cairo, const char *font, int *width, int *height,
-		double scale, bool markup, const char *fmt, ...) {
-	static char buf[2048];
+		int *baseline, double scale, bool markup, const char *fmt, ...) {
+	char buf[max_chars];
 
 	va_list args;
 	va_start(args, fmt);
-	if (vsnprintf(buf, 2048, fmt, args) >= 2048) {
-		strcpy(buf, "[buffer overflow]");
+	if (vsnprintf(buf, sizeof(buf), fmt, args) >= max_chars) {
+		strcpy(&buf[sizeof(buf) - sizeof(overflow)], overflow);
 	}
 	va_end(args);
 
 	PangoLayout *layout = get_pango_layout(cairo, font, buf, scale, markup);
 	pango_cairo_update_layout(cairo, layout);
 	pango_layout_get_pixel_size(layout, width, height);
+	if (baseline) {
+		*baseline = pango_layout_get_baseline(layout) / PANGO_SCALE;
+	}
 	g_object_unref(layout);
 }
 
 void pango_printf(cairo_t *cairo, const char *font,
 		double scale, bool markup, const char *fmt, ...) {
-	static char buf[2048];
+	char buf[max_chars];
 
 	va_list args;
 	va_start(args, fmt);
-	if (vsnprintf(buf, 2048, fmt, args) >= 2048) {
-		strcpy(buf, "[buffer overflow]");
+	if (vsnprintf(buf, sizeof(buf), fmt, args) >= max_chars) {
+		strcpy(&buf[sizeof(buf) - sizeof(overflow)], overflow);
 	}
 	va_end(args);
 
 	PangoLayout *layout = get_pango_layout(cairo, font, buf, scale, markup);
+	cairo_font_options_t *fo = cairo_font_options_create();
+	cairo_get_font_options(cairo, fo);
+	pango_cairo_context_set_font_options(pango_layout_get_context(layout), fo);
+	cairo_font_options_destroy(fo);
 	pango_cairo_update_layout(cairo, layout);
 	pango_cairo_show_layout(cairo, layout);
 	g_object_unref(layout);

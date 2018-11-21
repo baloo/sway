@@ -4,18 +4,19 @@
 #include <wlr/types/wlr_surface.h>
 #include <wlr/types/wlr_xdg_shell_v6.h>
 #include "config.h"
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 #include <wlr/xwayland.h>
 #endif
 #include "sway/input/input-manager.h"
 #include "sway/input/seat.h"
 
 struct sway_container;
+struct sway_xdg_decoration;
 
 enum sway_view_type {
 	SWAY_VIEW_XDG_SHELL_V6,
 	SWAY_VIEW_XDG_SHELL,
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 	SWAY_VIEW_XWAYLAND,
 #endif
 };
@@ -27,8 +28,9 @@ enum sway_view_prop {
 	VIEW_PROP_INSTANCE,
 	VIEW_PROP_WINDOW_TYPE,
 	VIEW_PROP_WINDOW_ROLE,
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 	VIEW_PROP_X11_WINDOW_ID,
+	VIEW_PROP_X11_PARENT_ID,
 #endif
 };
 
@@ -44,11 +46,12 @@ struct sway_view_impl {
 	void (*set_tiled)(struct sway_view *view, bool tiled);
 	void (*set_fullscreen)(struct sway_view *view, bool fullscreen);
 	bool (*wants_floating)(struct sway_view *view);
-	bool (*has_client_side_decorations)(struct sway_view *view);
 	void (*for_each_surface)(struct sway_view *view,
 		wlr_surface_iterator_func_t iterator, void *user_data);
 	void (*for_each_popup)(struct sway_view *view,
 		wlr_surface_iterator_func_t iterator, void *user_data);
+	bool (*is_transient_for)(struct sway_view *child,
+			struct sway_view *ancestor);
 	void (*close)(struct sway_view *view);
 	void (*close_popups)(struct sway_view *view);
 	void (*destroy)(struct sway_view *view);
@@ -58,12 +61,11 @@ struct sway_view {
 	enum sway_view_type type;
 	const struct sway_view_impl *impl;
 
-	struct sway_container *swayc; // NULL for unmapped views
+	struct sway_container *container; // NULL if unmapped and transactions finished
 	struct wlr_surface *surface; // NULL for unmapped views
+	struct sway_xdg_decoration *xdg_decoration;
 
-	// Geometry of the view itself (excludes borders) in layout coordinates
-	double x, y;
-	int width, height;
+	pid_t pid;
 
 	double saved_x, saved_y;
 	int saved_width, saved_height;
@@ -73,12 +75,7 @@ struct sway_view {
 	int natural_width, natural_height;
 
 	char *title_format;
-	enum sway_container_border border;
-	int border_thickness;
-	bool border_top;
-	bool border_bottom;
-	bool border_left;
-	bool border_right;
+
 	bool using_csd;
 
 	struct timespec urgent;
@@ -88,20 +85,22 @@ struct sway_view {
 	struct wlr_buffer *saved_buffer;
 	int saved_buffer_width, saved_buffer_height;
 
+	// The geometry for whatever the client is committing, regardless of
+	// transaction state. Updated on every commit.
+	struct wlr_box geometry;
+
+	// The "old" geometry during a transaction. Used to damage the old location
+	// when a transaction is applied.
+	struct wlr_box saved_geometry;
+
 	bool destroying;
 
 	list_t *executed_criteria; // struct criteria *
-	list_t *marks;             // char *
-
-	struct wlr_texture *marks_focused;
-	struct wlr_texture *marks_focused_inactive;
-	struct wlr_texture *marks_unfocused;
-	struct wlr_texture *marks_urgent;
 
 	union {
 		struct wlr_xdg_surface_v6 *wlr_xdg_surface_v6;
 		struct wlr_xdg_surface *wlr_xdg_surface;
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 		struct wlr_xwayland_surface *wlr_xwayland_surface;
 #endif
 		struct wlr_wl_shell_surface *wlr_wl_shell_surface;
@@ -112,13 +111,10 @@ struct sway_view {
 	} events;
 
 	struct wl_listener surface_new_subsurface;
-	struct wl_listener container_reparent;
 };
 
 struct sway_xdg_shell_v6_view {
 	struct sway_view view;
-
-	enum wlr_server_decoration_manager_mode deco_mode;
 
 	struct wl_listener commit;
 	struct wl_listener request_move;
@@ -136,8 +132,6 @@ struct sway_xdg_shell_v6_view {
 struct sway_xdg_shell_view {
 	struct sway_view view;
 
-	enum wlr_server_decoration_manager_mode deco_mode;
-
 	struct wl_listener commit;
 	struct wl_listener request_move;
 	struct wl_listener request_resize;
@@ -150,7 +144,7 @@ struct sway_xdg_shell_view {
 	struct wl_listener unmap;
 	struct wl_listener destroy;
 };
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 struct sway_xwayland_view {
 	struct sway_view view;
 
@@ -160,10 +154,13 @@ struct sway_xwayland_view {
 	struct wl_listener request_maximize;
 	struct wl_listener request_configure;
 	struct wl_listener request_fullscreen;
+	struct wl_listener request_activate;
 	struct wl_listener set_title;
 	struct wl_listener set_class;
+	struct wl_listener set_role;
 	struct wl_listener set_window_type;
 	struct wl_listener set_hints;
+	struct wl_listener set_decorations;
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener destroy;
@@ -186,6 +183,7 @@ struct sway_xwayland_unmanaged {
 struct sway_view_child;
 
 struct sway_view_child_impl {
+	void (*get_root_coords)(struct sway_view_child *child, int *sx, int *sy);
 	void (*destroy)(struct sway_view_child *child);
 };
 
@@ -200,8 +198,9 @@ struct sway_view_child {
 
 	struct wl_listener surface_commit;
 	struct wl_listener surface_new_subsurface;
+	struct wl_listener surface_map;
+	struct wl_listener surface_unmap;
 	struct wl_listener surface_destroy;
-	struct wl_listener view_unmap;
 };
 
 struct sway_xdg_popup_v6 {
@@ -232,6 +231,8 @@ const char *view_get_instance(struct sway_view *view);
 
 uint32_t view_get_x11_window_id(struct sway_view *view);
 
+uint32_t view_get_x11_parent_id(struct sway_view *view);
+
 const char *view_get_window_role(struct sway_view *view);
 
 uint32_t view_get_window_type(struct sway_view *view);
@@ -245,12 +246,35 @@ uint32_t view_configure(struct sway_view *view, double lx, double ly, int width,
 	int height);
 
 /**
- * Configure the view's position and size based on the swayc's position and
+ * Whether or not the view is the only visible view in its tree. If the view
+ * is tiling, there may be floating views. If the view is floating, there may
+ * be tiling views or views in a different floating container.
+ */
+bool view_is_only_visible(struct sway_view *view);
+
+/**
+ * Configure the view's position and size based on the container's position and
  * size, taking borders into consideration.
  */
 void view_autoconfigure(struct sway_view *view);
 
 void view_set_activated(struct sway_view *view, bool activated);
+
+/**
+ * Called when the view requests to be focused.
+ */
+void view_request_activate(struct sway_view *view);
+
+/**
+ * If possible, instructs the client to change their decoration mode.
+ */
+void view_set_csd_from_server(struct sway_view *view, bool enabled);
+
+/**
+ * Updates the view's border setting when the client unexpectedly changes their
+ * decoration mode.
+ */
+void view_update_csd_from_client(struct sway_view *view, bool enabled);
 
 void view_set_tiled(struct sway_view *view, bool tiled);
 
@@ -277,15 +301,14 @@ void view_for_each_popup(struct sway_view *view,
 void view_init(struct sway_view *view, enum sway_view_type type,
 	const struct sway_view_impl *impl);
 
-void view_free(struct sway_view *view);
-
 void view_destroy(struct sway_view *view);
 
-void view_map(struct sway_view *view, struct wlr_surface *wlr_surface);
+void view_begin_destroy(struct sway_view *view);
+
+void view_map(struct sway_view *view, struct wlr_surface *wlr_surface,
+	bool fullscreen, bool decoration);
 
 void view_unmap(struct sway_view *view);
-
-void view_update_position(struct sway_view *view, double lx, double ly);
 
 void view_update_size(struct sway_view *view, int width, int height);
 
@@ -300,7 +323,7 @@ struct sway_view *view_from_wlr_xdg_surface(
 	struct wlr_xdg_surface *xdg_surface);
 struct sway_view *view_from_wlr_xdg_surface_v6(
 	struct wlr_xdg_surface_v6 *xdg_surface_v6);
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 struct sway_view *view_from_wlr_xwayland_surface(
 	struct wlr_xwayland_surface *xsurface);
 #endif
@@ -320,28 +343,6 @@ void view_update_title(struct sway_view *view, bool force);
 void view_execute_criteria(struct sway_view *view);
 
 /**
- * Find any view that has the given mark and return it.
- */
-struct sway_view *view_find_mark(char *mark);
-
-/**
- * Find any view that has the given mark and remove the mark from the view.
- * Returns true if it matched a view.
- */
-bool view_find_and_unmark(char *mark);
-
-/**
- * Remove all marks from the view.
- */
-void view_clear_marks(struct sway_view *view);
-
-bool view_has_mark(struct sway_view *view, char *mark);
-
-void view_add_mark(struct sway_view *view, char *mark);
-
-void view_update_marks_textures(struct sway_view *view);
-
-/**
  * Returns true if there's a possibility the view may be rendered on screen.
  * Intended for damage tracking.
  */
@@ -354,5 +355,7 @@ bool view_is_urgent(struct sway_view *view);
 void view_remove_saved_buffer(struct sway_view *view);
 
 void view_save_buffer(struct sway_view *view);
+
+bool view_is_transient_for(struct sway_view *child, struct sway_view *ancestor);
 
 #endif

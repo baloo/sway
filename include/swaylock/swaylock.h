@@ -54,6 +54,10 @@ struct swaylock_password {
 };
 
 struct swaylock_state {
+	struct loop *eventloop;
+	struct loop_timer *clear_indicator_timer; // clears the indicator
+	struct loop_timer *clear_password_timer;  // clears the password buffer
+	struct loop_timer *verify_password_timer;
 	struct wl_display *display;
 	struct wl_compositor *compositor;
 	struct zwlr_layer_shell_v1 *layer_shell;
@@ -82,6 +86,7 @@ struct swaylock_surface {
 	bool frame_pending, dirty;
 	uint32_t width, height;
 	int32_t scale;
+	enum wl_output_subpixel subpixel;
 	char *output_name;
 	struct wl_list link;
 };
@@ -100,5 +105,8 @@ void render_frame(struct swaylock_surface *surface);
 void render_frames(struct swaylock_state *state);
 void damage_surface(struct swaylock_surface *surface);
 void damage_state(struct swaylock_state *state);
+void initialize_pw_backend(void);
+bool attempt_password(struct swaylock_password *pw);
+void clear_password_buffer(struct swaylock_password *pw);
 
 #endif

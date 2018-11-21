@@ -4,7 +4,6 @@
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
 #include "sway/tree/view.h"
-#include "sway/tree/layout.h"
 #include "util.h"
 
 struct cmd_results *cmd_urgent(int argc, char **argv) {
@@ -12,13 +11,15 @@ struct cmd_results *cmd_urgent(int argc, char **argv) {
 	if ((error = checkarg(argc, "urgent", EXPECTED_EQUAL_TO, 1))) {
 		return error;
 	}
-	struct sway_container *container =
-		config->handler_context.current_container;
-	if (container->type != C_VIEW) {
+	struct sway_container *container = config->handler_context.container;
+	if (!container) {
+		return cmd_results_new(CMD_FAILURE, "urgent", "No current container");
+	}
+	if (!container->view) {
 		return cmd_results_new(CMD_INVALID, "urgent",
 				"Only views can be urgent");
 	}
-	struct sway_view *view = container->sway_view;
+	struct sway_view *view = container->view;
 
 	if (strcmp(argv[0], "allow") == 0) {
 		view->allow_request_urgent = true;

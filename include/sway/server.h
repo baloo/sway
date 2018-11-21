@@ -7,14 +7,14 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
-#include <wlr/types/wlr_layer_shell.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xdg_shell_v6.h>
 #include <wlr/types/wlr_xdg_shell.h>
-// TODO WLR: make Xwayland optional
-#include "list.h"
 #include "config.h"
-#ifdef HAVE_XWAYLAND
+#include "list.h"
+#if HAVE_XWAYLAND
 #include "sway/xwayland.h"
 #endif
 
@@ -35,7 +35,7 @@ struct sway_server {
 	struct wlr_idle *idle;
 	struct sway_idle_inhibit_manager_v1 *idle_inhibit_manager_v1;
 
-	struct wlr_layer_shell *layer_shell;
+	struct wlr_layer_shell_v1 *layer_shell;
 	struct wl_listener layer_shell_surface;
 
 	struct wlr_xdg_shell_v6 *xdg_shell_v6;
@@ -44,7 +44,7 @@ struct sway_server {
 	struct wlr_xdg_shell *xdg_shell;
 	struct wl_listener xdg_shell_surface;
 
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 	struct sway_xwayland xwayland;
 	struct wl_listener xwayland_surface;
 	struct wl_listener xwayland_ready;
@@ -54,10 +54,15 @@ struct sway_server {
 	struct wl_listener server_decoration;
 	struct wl_list decorations; // sway_server_decoration::link
 
-	bool debug_txn_timings;
+	struct wlr_xdg_decoration_manager_v1 *xdg_decoration_manager;
+	struct wl_listener xdg_decoration;
+	struct wl_list xdg_decorations; // sway_xdg_decoration::link
 
+	struct wlr_presentation *presentation;
+
+	size_t txn_timeout_ms;
 	list_t *transactions;
-	list_t *dirty_containers;
+	list_t *dirty_nodes;
 };
 
 struct sway_server server;
@@ -75,9 +80,10 @@ void handle_idle_inhibitor_v1(struct wl_listener *listener, void *data);
 void handle_layer_shell_surface(struct wl_listener *listener, void *data);
 void handle_xdg_shell_v6_surface(struct wl_listener *listener, void *data);
 void handle_xdg_shell_surface(struct wl_listener *listener, void *data);
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 void handle_xwayland_surface(struct wl_listener *listener, void *data);
 #endif
 void handle_server_decoration(struct wl_listener *listener, void *data);
+void handle_xdg_decoration(struct wl_listener *listener, void *data);
 
 #endif

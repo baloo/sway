@@ -1,57 +1,52 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <wlr/types/wlr_buffer.h>
+#include "sway/config.h"
 #include "sway/debug.h"
+#include "sway/desktop.h"
 #include "sway/desktop/idle_inhibit_v1.h"
 #include "sway/desktop/transaction.h"
+#include "sway/input/cursor.h"
+#include "sway/input/input-manager.h"
 #include "sway/output.h"
 #include "sway/tree/container.h"
+#include "sway/tree/node.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
 #include "list.h"
 #include "log.h"
-
-/**
- * How long we should wait for views to respond to the configure before giving
- * up and applying the transaction anyway.
- */
-int txn_timeout_ms = 200;
-
-/**
- * If enabled, sway will always wait for the transaction timeout before
- * applying it, rather than applying it when the views are ready. This allows us
- * to observe the rendered state while a transaction is in progress.
- */
-bool txn_debug = false;
 
 struct sway_transaction {
 	struct wl_event_source *timer;
 	list_t *instructions;   // struct sway_transaction_instruction *
 	size_t num_waiting;
 	size_t num_configures;
-	struct timespec create_time;
 	struct timespec commit_time;
 };
 
 struct sway_transaction_instruction {
 	struct sway_transaction *transaction;
-	struct sway_container *container;
-	struct sway_container_state state;
+	struct sway_node *node;
+	union {
+		struct sway_output_state output_state;
+		struct sway_workspace_state workspace_state;
+		struct sway_container_state container_state;
+	};
 	uint32_t serial;
-	bool ready;
 };
 
-static struct sway_transaction *transaction_create() {
+static struct sway_transaction *transaction_create(void) {
 	struct sway_transaction *transaction =
 		calloc(1, sizeof(struct sway_transaction));
-	transaction->instructions = create_list();
-	if (server.debug_txn_timings) {
-		clock_gettime(CLOCK_MONOTONIC, &transaction->create_time);
+	if (!sway_assert(transaction, "Unable to allocate transaction")) {
+		return NULL;
 	}
+	transaction->instructions = create_list();
 	return transaction;
 }
 
@@ -60,15 +55,26 @@ static void transaction_destroy(struct sway_transaction *transaction) {
 	for (int i = 0; i < transaction->instructions->length; ++i) {
 		struct sway_transaction_instruction *instruction =
 			transaction->instructions->items[i];
-		struct sway_container *con = instruction->container;
-		for (int j = 0; j < con->instructions->length; ++j) {
-			if (con->instructions->items[j] == instruction) {
-				list_del(con->instructions, j);
+		struct sway_node *node = instruction->node;
+		node->ntxnrefs--;
+		if (node->instruction == instruction) {
+			node->instruction = NULL;
+		}
+		if (node->destroying && node->ntxnrefs == 0) {
+			switch (node->type) {
+			case N_ROOT:
+				sway_assert(false, "Never reached");
+				break;
+			case N_OUTPUT:
+				output_destroy(node->sway_output);
+				break;
+			case N_WORKSPACE:
+				workspace_destroy(node->sway_workspace);
+				break;
+			case N_CONTAINER:
+				container_destroy(node->sway_container);
 				break;
 			}
-		}
-		if (con->destroying && !con->instructions->length) {
-			container_free(con);
 		}
 		free(instruction);
 	}
@@ -80,61 +86,174 @@ static void transaction_destroy(struct sway_transaction *transaction) {
 	free(transaction);
 }
 
-static void copy_pending_state(struct sway_container *container,
-		struct sway_container_state *state) {
-	state->layout = container->layout;
-	state->swayc_x = container->x;
-	state->swayc_y = container->y;
-	state->swayc_width = container->width;
-	state->swayc_height = container->height;
-	state->is_fullscreen = container->is_fullscreen;
-	state->has_gaps = container->has_gaps;
-	state->current_gaps = container->current_gaps;
-	state->gaps_inner = container->gaps_inner;
-	state->gaps_outer = container->gaps_outer;
-	state->parent = container->parent;
+static void copy_output_state(struct sway_output *output,
+		struct sway_transaction_instruction *instruction) {
+	struct sway_output_state *state = &instruction->output_state;
+	state->workspaces = create_list();
+	list_cat(state->workspaces, output->workspaces);
 
-	if (container->type == C_VIEW) {
-		struct sway_view *view = container->sway_view;
-		state->view_x = view->x;
-		state->view_y = view->y;
-		state->view_width = view->width;
-		state->view_height = view->height;
-		state->border = view->border;
-		state->border_thickness = view->border_thickness;
-		state->border_top = view->border_top;
-		state->border_left = view->border_left;
-		state->border_right = view->border_right;
-		state->border_bottom = view->border_bottom;
-	} else if (container->type == C_WORKSPACE) {
-		state->ws_fullscreen = container->sway_workspace->fullscreen;
-		state->ws_floating = container->sway_workspace->floating;
-		state->children = create_list();
-		list_cat(state->children, container->children);
-	} else {
+	state->active_workspace = output_get_active_workspace(output);
+}
+
+static void copy_workspace_state(struct sway_workspace *ws,
+		struct sway_transaction_instruction *instruction) {
+	struct sway_workspace_state *state = &instruction->workspace_state;
+
+	state->fullscreen = ws->fullscreen;
+	state->x = ws->x;
+	state->y = ws->y;
+	state->width = ws->width;
+	state->height = ws->height;
+	state->layout = ws->layout;
+
+	state->output = ws->output;
+	state->floating = create_list();
+	state->tiling = create_list();
+	list_cat(state->floating, ws->floating);
+	list_cat(state->tiling, ws->tiling);
+
+	struct sway_seat *seat = input_manager_current_seat();
+	state->focused = seat_get_focus(seat) == &ws->node;
+
+	// Set focused_inactive_child to the direct tiling child
+	struct sway_container *focus = seat_get_focus_inactive_tiling(seat, ws);
+	if (focus) {
+		while (focus->parent) {
+			focus = focus->parent;
+		}
+	}
+	state->focused_inactive_child = focus;
+}
+
+static void copy_container_state(struct sway_container *container,
+		struct sway_transaction_instruction *instruction) {
+	struct sway_container_state *state = &instruction->container_state;
+
+	state->layout = container->layout;
+	state->x = container->x;
+	state->y = container->y;
+	state->width = container->width;
+	state->height = container->height;
+	state->is_fullscreen = container->is_fullscreen;
+	state->parent = container->parent;
+	state->workspace = container->workspace;
+	state->border = container->border;
+	state->border_thickness = container->border_thickness;
+	state->border_top = container->border_top;
+	state->border_left = container->border_left;
+	state->border_right = container->border_right;
+	state->border_bottom = container->border_bottom;
+	state->content_x = container->content_x;
+	state->content_y = container->content_y;
+	state->content_width = container->content_width;
+	state->content_height = container->content_height;
+
+	if (!container->view) {
 		state->children = create_list();
 		list_cat(state->children, container->children);
 	}
 
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	state->focused = seat_get_focus(seat) == container;
+	struct sway_seat *seat = input_manager_current_seat();
+	state->focused = seat_get_focus(seat) == &container->node;
 
-	if (container->type != C_VIEW) {
-		state->focused_inactive_child =
-			seat_get_active_child(seat, container);
+	if (!container->view) {
+		struct sway_node *focus =
+			seat_get_active_tiling_child(seat, &container->node);
+		state->focused_inactive_child = focus ? focus->sway_container : NULL;
 	}
 }
 
-static void transaction_add_container(struct sway_transaction *transaction,
-		struct sway_container *container) {
+static void transaction_add_node(struct sway_transaction *transaction,
+		struct sway_node *node) {
 	struct sway_transaction_instruction *instruction =
 		calloc(1, sizeof(struct sway_transaction_instruction));
+	if (!sway_assert(instruction, "Unable to allocate instruction")) {
+		return;
+	}
 	instruction->transaction = transaction;
-	instruction->container = container;
+	instruction->node = node;
 
-	copy_pending_state(container, &instruction->state);
+	switch (node->type) {
+	case N_ROOT:
+		break;
+	case N_OUTPUT:
+		copy_output_state(node->sway_output, instruction);
+		break;
+	case N_WORKSPACE:
+		copy_workspace_state(node->sway_workspace, instruction);
+		break;
+	case N_CONTAINER:
+		copy_container_state(node->sway_container, instruction);
+		break;
+	}
 
 	list_add(transaction->instructions, instruction);
+	node->ntxnrefs++;
+}
+
+static void apply_output_state(struct sway_output *output,
+		struct sway_output_state *state) {
+	output_damage_whole(output);
+	list_free(output->current.workspaces);
+	memcpy(&output->current, state, sizeof(struct sway_output_state));
+	output_damage_whole(output);
+}
+
+static void apply_workspace_state(struct sway_workspace *ws,
+		struct sway_workspace_state *state) {
+	output_damage_whole(ws->current.output);
+	list_free(ws->current.floating);
+	list_free(ws->current.tiling);
+	memcpy(&ws->current, state, sizeof(struct sway_workspace_state));
+	output_damage_whole(ws->current.output);
+}
+
+static void apply_container_state(struct sway_container *container,
+		struct sway_container_state *state) {
+	struct sway_view *view = container->view;
+	// Damage the old location
+	desktop_damage_whole_container(container);
+	if (view && view->saved_buffer) {
+		struct wlr_box box = {
+			.x = container->current.content_x - view->saved_geometry.x,
+			.y = container->current.content_y - view->saved_geometry.y,
+			.width = view->saved_buffer_width,
+			.height = view->saved_buffer_height,
+		};
+		desktop_damage_box(&box);
+	}
+
+	// There are separate children lists for each instruction state, the
+	// container's current state and the container's pending state
+	// (ie. con->children). The list itself needs to be freed here.
+	// Any child containers which are being deleted will be cleaned up in
+	// transaction_destroy().
+	list_free(container->current.children);
+
+	memcpy(&container->current, state, sizeof(struct sway_container_state));
+
+	if (view && view->saved_buffer) {
+		if (!container->node.destroying || container->node.ntxnrefs == 1) {
+			view_remove_saved_buffer(view);
+		}
+	}
+
+	// Damage the new location
+	desktop_damage_whole_container(container);
+	if (view && view->surface) {
+		struct wlr_surface *surface = view->surface;
+		struct wlr_box box = {
+			.x = container->current.content_x - view->geometry.x,
+			.y = container->current.content_y - view->geometry.y,
+			.width = surface->current.width,
+			.height = surface->current.height,
+		};
+		desktop_damage_box(&box);
+	}
+
+	if (!container->node.destroying) {
+		container_discover_outputs(container);
+	}
 }
 
 /**
@@ -142,87 +261,104 @@ static void transaction_add_container(struct sway_transaction *transaction,
  */
 static void transaction_apply(struct sway_transaction *transaction) {
 	wlr_log(WLR_DEBUG, "Applying transaction %p", transaction);
-	if (server.debug_txn_timings) {
+	if (debug.txn_timings) {
 		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC, &now);
-		struct timespec *create = &transaction->create_time;
 		struct timespec *commit = &transaction->commit_time;
-		float ms_arranging = (commit->tv_sec - create->tv_sec) * 1000 +
-			(commit->tv_nsec - create->tv_nsec) / 1000000.0;
-		float ms_waiting = (now.tv_sec - commit->tv_sec) * 1000 +
+		float ms = (now.tv_sec - commit->tv_sec) * 1000 +
 			(now.tv_nsec - commit->tv_nsec) / 1000000.0;
-		float ms_total = ms_arranging + ms_waiting;
-		wlr_log(WLR_DEBUG, "Transaction %p: %.1fms arranging, %.1fms waiting, "
-			"%.1fms total (%.1f frames if 60Hz)", transaction,
-			ms_arranging, ms_waiting, ms_total, ms_total / (1000.0f / 60));
+		wlr_log(WLR_DEBUG, "Transaction %p: %.1fms waiting "
+				"(%.1f frames if 60Hz)", transaction, ms, ms / (1000.0f / 60));
 	}
 
-	// Apply the instruction state to the container's current state
+	// Apply the instruction state to the node's current state
 	for (int i = 0; i < transaction->instructions->length; ++i) {
 		struct sway_transaction_instruction *instruction =
 			transaction->instructions->items[i];
-		struct sway_container *container = instruction->container;
+		struct sway_node *node = instruction->node;
 
-		// Damage the old and new locations
-		struct wlr_box old_box = {
-			.x = container->current.swayc_x,
-			.y = container->current.swayc_y,
-			.width = container->current.swayc_width,
-			.height = container->current.swayc_height,
-		};
-		struct wlr_box new_box = {
-			.x = instruction->state.swayc_x,
-			.y = instruction->state.swayc_y,
-			.width = instruction->state.swayc_width,
-			.height = instruction->state.swayc_height,
-		};
-		for (int j = 0; j < root_container.current.children->length; ++j) {
-			struct sway_container *output = root_container.current.children->items[j];
-			if (output->sway_output) {
-				output_damage_box(output->sway_output, &old_box);
-				output_damage_box(output->sway_output, &new_box);
-			}
+		switch (node->type) {
+		case N_ROOT:
+			break;
+		case N_OUTPUT:
+			apply_output_state(node->sway_output, &instruction->output_state);
+			break;
+		case N_WORKSPACE:
+			apply_workspace_state(node->sway_workspace,
+					&instruction->workspace_state);
+			break;
+		case N_CONTAINER:
+			apply_container_state(node->sway_container,
+					&instruction->container_state);
+			break;
 		}
 
-		// There are separate children lists for each instruction state, the
-		// container's current state and the container's pending state
-		// (ie. con->children). The list itself needs to be freed here.
-		// Any child containers which are being deleted will be cleaned up in
-		// transaction_destroy().
-		list_free(container->current.children);
+		node->instruction = NULL;
+	}
 
-		memcpy(&container->current, &instruction->state,
-				sizeof(struct sway_container_state));
-
-		if (container->type == C_VIEW) {
-			if (container->destroying) {
-				if (container->instructions->length == 1 &&
-						container->sway_view->saved_buffer) {
-					view_remove_saved_buffer(container->sway_view);
-				}
-			} else {
-				if (container->sway_view->saved_buffer) {
-					view_remove_saved_buffer(container->sway_view);
-				}
-				if (container->instructions->length > 1) {
-					view_save_buffer(container->sway_view);
-				}
+	if (root->outputs->length) {
+		struct sway_seat *seat;
+		wl_list_for_each(seat, &server.input->seats, link) {
+			if (seat->operation == OP_NONE) {
+				cursor_rebase(seat->cursor);
 			}
 		}
 	}
 }
 
-static void transaction_progress_queue() {
-	while (server.transactions->length) {
-		struct sway_transaction *transaction = server.transactions->items[0];
-		if (transaction->num_waiting) {
-			return;
-		}
-		transaction_apply(transaction);
-		transaction_destroy(transaction);
-		list_del(server.transactions, 0);
+static void transaction_commit(struct sway_transaction *transaction);
+
+// Return true if both transactions operate on the same nodes
+static bool transaction_same_nodes(struct sway_transaction *a,
+		struct sway_transaction *b) {
+	if (a->instructions->length != b->instructions->length) {
+		return false;
 	}
-	idle_inhibit_v1_check_active(server.idle_inhibit_manager_v1);
+	for (int i = 0; i < a->instructions->length; ++i) {
+		struct sway_transaction_instruction *a_inst = a->instructions->items[i];
+		struct sway_transaction_instruction *b_inst = b->instructions->items[i];
+		if (a_inst->node != b_inst->node) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void transaction_progress_queue(void) {
+	if (!server.transactions->length) {
+		return;
+	}
+	// There's only ever one committed transaction,
+	// and it's the first one in the queue.
+	struct sway_transaction *transaction = server.transactions->items[0];
+	if (transaction->num_waiting) {
+		return;
+	}
+	transaction_apply(transaction);
+	transaction_destroy(transaction);
+	list_del(server.transactions, 0);
+
+	if (!server.transactions->length) {
+		idle_inhibit_v1_check_active(server.idle_inhibit_manager_v1);
+		return;
+	}
+
+	// If there's a bunch of consecutive transactions which all apply to the
+	// same views, skip all except the last one.
+	while (server.transactions->length >= 2) {
+		struct sway_transaction *a = server.transactions->items[0];
+		struct sway_transaction *b = server.transactions->items[1];
+		if (transaction_same_nodes(a, b)) {
+			list_del(server.transactions, 0);
+			transaction_destroy(a);
+		} else {
+			break;
+		}
+	}
+
+	transaction = server.transactions->items[0];
+	transaction_commit(transaction);
+	transaction_progress_queue();
 }
 
 static int handle_timeout(void *data) {
@@ -234,28 +370,28 @@ static int handle_timeout(void *data) {
 	return 0;
 }
 
-static bool should_configure(struct sway_container *con,
+static bool should_configure(struct sway_node *node,
 		struct sway_transaction_instruction *instruction) {
-	if (con->type != C_VIEW) {
+	if (!node_is_view(node)) {
 		return false;
 	}
-	if (con->destroying) {
+	if (node->destroying) {
 		return false;
 	}
-	// The settled dimensions are what size the view will be once any pending
-	// configures have applied (excluding the one we might be configuring now).
-	// If these match the dimensions that this transaction wants then we don't
-	// need to configure it.
-	int settled_width = con->current.view_width;
-	int settled_height = con->current.view_height;
-	if (con->instructions->length) {
-		struct sway_transaction_instruction *last_instruction =
-			con->instructions->items[con->instructions->length - 1];
-		settled_width = last_instruction->state.view_width;
-		settled_height = last_instruction->state.view_height;
+	struct sway_container_state *cstate = &node->sway_container->current;
+	struct sway_container_state *istate = &instruction->container_state;
+#if HAVE_XWAYLAND
+	// Xwayland views are position-aware and need to be reconfigured
+	// when their position changes.
+	if (node->sway_container->view->type == SWAY_VIEW_XWAYLAND) {
+		if (cstate->content_x != istate->content_x ||
+				cstate->content_y != istate->content_y) {
+			return true;
+		}
 	}
-	if (settled_width == instruction->state.view_width &&
-			settled_height == instruction->state.view_height) {
+#endif
+	if (cstate->content_width == istate->content_width &&
+			cstate->content_height == istate->content_height) {
 		return false;
 	}
 	return true;
@@ -268,13 +404,13 @@ static void transaction_commit(struct sway_transaction *transaction) {
 	for (int i = 0; i < transaction->instructions->length; ++i) {
 		struct sway_transaction_instruction *instruction =
 			transaction->instructions->items[i];
-		struct sway_container *con = instruction->container;
-		if (should_configure(con, instruction)) {
-			instruction->serial = view_configure(con->sway_view,
-					instruction->state.view_x,
-					instruction->state.view_y,
-					instruction->state.view_width,
-					instruction->state.view_height);
+		struct sway_node *node = instruction->node;
+		if (should_configure(node, instruction)) {
+			instruction->serial = view_configure(node->sway_container->view,
+					instruction->container_state.content_x,
+					instruction->container_state.content_y,
+					instruction->container_state.content_width,
+					instruction->container_state.content_height);
 			++transaction->num_waiting;
 
 			// From here on we are rendering a saved buffer of the view, which
@@ -282,27 +418,27 @@ static void transaction_commit(struct sway_transaction *transaction) {
 			// as soon as possible. Additionally, this is required if a view is
 			// mapping and its default geometry doesn't intersect an output.
 			struct timespec when;
-			wlr_surface_send_frame_done(con->sway_view->surface, &when);
+			wlr_surface_send_frame_done(
+					node->sway_container->view->surface, &when);
 		}
-		if (con->type == C_VIEW && !con->sway_view->saved_buffer) {
-			view_save_buffer(con->sway_view);
+		if (node_is_view(node) && !node->sway_container->view->saved_buffer) {
+			view_save_buffer(node->sway_container->view);
+			memcpy(&node->sway_container->view->saved_geometry,
+					&node->sway_container->view->geometry,
+					sizeof(struct wlr_box));
 		}
-		list_add(con->instructions, instruction);
+		node->instruction = instruction;
 	}
 	transaction->num_configures = transaction->num_waiting;
-	if (server.debug_txn_timings) {
+	if (debug.txn_timings) {
 		clock_gettime(CLOCK_MONOTONIC, &transaction->commit_time);
 	}
-	if (server.transactions->length || transaction->num_waiting) {
-		list_add(server.transactions, transaction);
-	} else {
-		// There are no other transactions in progress, and this one has nothing
-		// to wait for, so we can skip the queue.
-		wlr_log(WLR_DEBUG, "Transaction %p has nothing to wait for", transaction);
-		transaction_apply(transaction);
-		transaction_destroy(transaction);
-		idle_inhibit_v1_check_active(server.idle_inhibit_manager_v1);
-		return;
+	if (debug.noatomic) {
+		transaction->num_waiting = 0;
+	} else if (debug.txn_wait) {
+		// Force the transaction to time out even if all views are ready.
+		// We do this by inflating the waiting counter.
+		transaction->num_waiting += 1000000;
 	}
 
 	if (transaction->num_waiting) {
@@ -310,12 +446,13 @@ static void transaction_commit(struct sway_transaction *transaction) {
 		transaction->timer = wl_event_loop_add_timer(server.wl_event_loop,
 				handle_timeout, transaction);
 		if (transaction->timer) {
-			wl_event_source_timer_update(transaction->timer, txn_timeout_ms);
+			wl_event_source_timer_update(transaction->timer,
+					server.txn_timeout_ms);
 		} else {
 			wlr_log(WLR_ERROR, "Unable to create transaction timer (%s). "
 					"Some imperfect frames might be rendered.",
 					strerror(errno));
-			handle_timeout(transaction);
+			transaction->num_waiting = 0;
 		}
 	}
 
@@ -327,10 +464,9 @@ static void transaction_commit(struct sway_transaction *transaction) {
 
 static void set_instruction_ready(
 		struct sway_transaction_instruction *instruction) {
-	instruction->ready = true;
 	struct sway_transaction *transaction = instruction->transaction;
 
-	if (server.debug_txn_timings) {
+	if (debug.txn_timings) {
 		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		struct timespec *start = &transaction->commit_time;
@@ -340,68 +476,61 @@ static void set_instruction_ready(
 				transaction,
 				transaction->num_configures - transaction->num_waiting + 1,
 				transaction->num_configures, ms,
-				instruction->container->name);
-
+				instruction->node->sway_container->title);
 	}
 
 	// If the transaction has timed out then its num_waiting will be 0 already.
 	if (transaction->num_waiting > 0 && --transaction->num_waiting == 0) {
-		if (!txn_debug) {
-			wlr_log(WLR_DEBUG, "Transaction %p is ready", transaction);
-			wl_event_source_timer_update(transaction->timer, 0);
-		}
+		wlr_log(WLR_DEBUG, "Transaction %p is ready", transaction);
+		wl_event_source_timer_update(transaction->timer, 0);
 	}
-}
 
-/**
- * Mark all of the view's instructions as ready up to and including the
- * instruction at the given index. This allows the view to skip a configure.
- */
-static void set_instructions_ready(struct sway_view *view, int index) {
-	for (int i = 0; i <= index; ++i) {
-		struct sway_transaction_instruction *instruction =
-			view->swayc->instructions->items[i];
-		if (!instruction->ready) {
-			set_instruction_ready(instruction);
-		}
-	}
+	instruction->node->instruction = NULL;
 	transaction_progress_queue();
 }
 
-void transaction_notify_view_ready(struct sway_view *view, uint32_t serial) {
-	for (int i = 0; i < view->swayc->instructions->length; ++i) {
-		struct sway_transaction_instruction *instruction =
-			view->swayc->instructions->items[i];
-		if (instruction->serial == serial && !instruction->ready) {
-			set_instructions_ready(view, i);
-			return;
-		}
+void transaction_notify_view_ready_by_serial(struct sway_view *view,
+		uint32_t serial) {
+	struct sway_transaction_instruction *instruction =
+		view->container->node.instruction;
+	if (instruction->serial == serial) {
+		set_instruction_ready(instruction);
 	}
 }
 
 void transaction_notify_view_ready_by_size(struct sway_view *view,
 		int width, int height) {
-	for (int i = 0; i < view->swayc->instructions->length; ++i) {
-		struct sway_transaction_instruction *instruction =
-			view->swayc->instructions->items[i];
-		if (!instruction->ready && instruction->state.view_width == width &&
-				instruction->state.view_height == height) {
-			set_instructions_ready(view, i);
-			return;
-		}
+	struct sway_transaction_instruction *instruction =
+		view->container->node.instruction;
+	if (instruction->container_state.content_width == width &&
+			instruction->container_state.content_height == height) {
+		set_instruction_ready(instruction);
 	}
 }
 
 void transaction_commit_dirty(void) {
-	if (!server.dirty_containers->length) {
+	if (!server.dirty_nodes->length) {
 		return;
 	}
 	struct sway_transaction *transaction = transaction_create();
-	for (int i = 0; i < server.dirty_containers->length; ++i) {
-		struct sway_container *container = server.dirty_containers->items[i];
-		transaction_add_container(transaction, container);
-		container->dirty = false;
+	if (!transaction) {
+		return;
 	}
-	server.dirty_containers->length = 0;
-	transaction_commit(transaction);
+	for (int i = 0; i < server.dirty_nodes->length; ++i) {
+		struct sway_node *node = server.dirty_nodes->items[i];
+		transaction_add_node(transaction, node);
+		node->dirty = false;
+	}
+	server.dirty_nodes->length = 0;
+
+	list_add(server.transactions, transaction);
+
+	// There's only ever one committed transaction,
+	// and it's the first one in the queue.
+	if (server.transactions->length == 1) {
+		transaction_commit(transaction);
+		// Attempting to progress the queue here is useful
+		// if the transaction has nothing to wait for.
+		transaction_progress_queue();
+	}
 }

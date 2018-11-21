@@ -26,35 +26,9 @@ void free_sway_binding(struct sway_binding *binding) {
 	if (binding->keys) {
 		free_flat_list(binding->keys);
 	}
+	free(binding->input);
 	free(binding->command);
 	free(binding);
-}
-
-static struct sway_binding *sway_binding_dup(struct sway_binding *sb) {
-	struct sway_binding *new_sb = calloc(1, sizeof(struct sway_binding));
-	if (!new_sb) {
-		return NULL;
-	}
-
-	new_sb->type = sb->type;
-	new_sb->order = sb->order;
-	new_sb->flags = sb->flags;
-	new_sb->modifiers = sb->modifiers;
-	new_sb->command = strdup(sb->command);
-
-	new_sb->keys = create_list();
-	int i;
-	for (i = 0; i < sb->keys->length; ++i) {
-		xkb_keysym_t *key = malloc(sizeof(xkb_keysym_t));
-		if (!key) {
-			free_sway_binding(new_sb);
-			return NULL;
-		}
-		*key = *(xkb_keysym_t *)sb->keys->items[i];
-		list_add(new_sb->keys, key);
-	}
-
-	return new_sb;
 }
 
 /**
@@ -64,6 +38,10 @@ static struct sway_binding *sway_binding_dup(struct sway_binding *sb) {
  */
 static bool binding_key_compare(struct sway_binding *binding_a,
 		struct sway_binding *binding_b) {
+	if (strcmp(binding_a->input, binding_b->input) != 0) {
+		return false;
+	}
+
 	if (binding_a->type != binding_b->type) {
 		return false;
 	}
@@ -167,7 +145,7 @@ static struct cmd_results *cmd_bindsym_or_bindcode(int argc, char **argv,
 	const char *bindtype = bindcode ? "bindcode" : "bindsym";
 
 	struct cmd_results *error = NULL;
-	if ((error = checkarg(argc, bindtype, EXPECTED_MORE_THAN, 1))) {
+	if ((error = checkarg(argc, bindtype, EXPECTED_AT_LEAST, 2))) {
 		return error;
 	}
 
@@ -176,6 +154,7 @@ static struct cmd_results *cmd_bindsym_or_bindcode(int argc, char **argv,
 		return cmd_results_new(CMD_FAILURE, bindtype,
 				"Unable to allocate binding");
 	}
+	binding->input = strdup("*");
 	binding->keys = create_list();
 	binding->modifiers = 0;
 	binding->flags = 0;
@@ -195,6 +174,10 @@ static struct cmd_results *cmd_bindsym_or_bindcode(int argc, char **argv,
 			binding->flags |= BINDING_BORDER;
 		} else if (strcmp("--exclude-titlebar", argv[0]) == 0) {
 			exclude_titlebar = true;
+		} else if (strncmp("--input-device=", argv[0],
+					strlen("--input-device=")) == 0) {
+			free(binding->input);
+			binding->input = strdup(argv[0] + strlen("--input-device="));
 		} else {
 			break;
 		}
@@ -284,8 +267,8 @@ static struct cmd_results *cmd_bindsym_or_bindcode(int argc, char **argv,
 		list_add(mode_bindings, binding);
 	}
 
-	wlr_log(WLR_DEBUG, "%s - Bound %s to command %s",
-		bindtype, argv[0], binding->command);
+	wlr_log(WLR_DEBUG, "%s - Bound %s to command `%s` for device '%s'",
+		bindtype, argv[0], binding->command, binding->input);
 	return cmd_results_new(CMD_SUCCESS, NULL, NULL);
 
 }
@@ -303,33 +286,16 @@ struct cmd_results *cmd_bindcode(int argc, char **argv) {
  * Execute the command associated to a binding
  */
 void seat_execute_command(struct sway_seat *seat, struct sway_binding *binding) {
-	wlr_log(WLR_DEBUG, "running command for binding: %s",
-		binding->command);
-
-	struct sway_binding *binding_copy = binding;
-	bool reload = false;
-	// if this is a reload command we need to make a duplicate of the
-	// binding since it will be gone after the reload has completed.
-	if (strcasecmp(binding->command, "reload") == 0) {
-		reload = true;
-		binding_copy = sway_binding_dup(binding);
-		if (!binding_copy) {
-			wlr_log(WLR_ERROR, "Failed to duplicate binding during reload");
-			return;
-		}
-	}
+	wlr_log(WLR_DEBUG, "running command for binding: %s", binding->command);
 
 	config->handler_context.seat = seat;
-	struct cmd_results *results = execute_command(binding->command, NULL);
+	struct cmd_results *results = execute_command(binding->command, NULL, NULL);
 	if (results->status == CMD_SUCCESS) {
-		ipc_event_binding(binding_copy);
+		ipc_event_binding(binding);
 	} else {
 		wlr_log(WLR_DEBUG, "could not run command for binding: %s (%s)",
 			binding->command, results->error);
 	}
 
-	if (reload) { // free the binding if we made a copy
-		free_sway_binding(binding_copy);
-	}
 	free_cmd_results(results);
 }

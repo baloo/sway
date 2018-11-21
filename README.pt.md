@@ -30,14 +30,6 @@ exite em enviar quaisquer correções necessárias.
 [B22DA89A](http://pgp.mit.edu/pks/lookup?op=vindex&search=0x52CB6609B22DA89A)
 e publicadas [no GitHub](https://github.com/swaywm/sway/releases).
 
-## Status
-
-- [Suporte aos recursos do i3](https://github.com/swaywm/sway/issues/2)
-- [Suporte aos recursos IPC](https://github.com/swaywm/sway/issues/98)
-- [Suporte aos recursos do i3bar](https://github.com/swaywm/sway/issues/343)
-- [Suporte aos recursos do i3-gaps](https://github.com/swaywm/sway/issues/307)
-- [Recursos de segurança](https://github.com/swaywm/sway/issues/984)
-
 ## Instalação
 
 ### A partir de pacotes
@@ -67,6 +59,7 @@ Antes de iniciar a compilação, instale as dependências:
 * gdk-pixbuf2 *
 * pam **
 * [scdoc](https://git.sr.ht/~sircmpwn/scdoc) (man pages)
+* git
 
 _\*Dependência apenas de swaybar, swaybg, e swaylock_
 

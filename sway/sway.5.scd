@@ -19,6 +19,24 @@ bindsym Shift+XF86AudioRaiseVolume exec \\
 	pactl set-sink-volume @DEFAULT_SINK@ -1%
 ```
 
+Commands can also be given as a block in the form *command { <subcommands...>
+}*. Anything before the opening *{* will be prepended to the lines inside the
+block. For example:
+
+```
+output eDP-1 {
+	background ~/wallpaper.png
+	resolution 1920x1080
+}
+```
+
+is identical to
+
+```
+output eDP-1 background ~/wallpaper.png
+output eDP-1 resolution 1920x1080
+```
+
 These commands can be executed in your config file, via *swaymsg*(1), or via
 the bindsym command.
 
@@ -37,10 +55,8 @@ which you may only select one. *[...]* is used for optional arguments, and
 
 The following commands may only be used in the configuration file.
 
-*bar {* <commands...> *}*
-	_commands..._ after *{* will be interpreted as bar commands. For
-	details, see *sway-bar*(5). A newline is required between *{* and the
-	first command, and *}* must be alone on a line.
+*bar* [<bar-id>] <bar-subcommands...>
+	For details on bar subcommands, see *sway-bar*(5).
 
 *default\_orientation* horizontal|vertical|auto
 	Sets the default container layout for tiled containers.
@@ -51,13 +67,12 @@ The following commands may only be used in the configuration file.
 	*wordexp*(3) for details). The same include file can only be included once;
 	subsequent attempts will be ignored.
 
-*set* <name> <value>
-	Sets variable $_name_ to _value_. You can use the new variable in the
-	arguments of future commands.
-
 *swaybg\_command* <command>
 	Executes custom background _command_. Default is _swaybg_. Refer to
-	*output* below for more information.
+	*sway-output*(5) for more information.
+
+	It can be disabled by setting the command to a single dash:
+	_swaybg\_command -_
 
 *swaynag\_command* <command>
 	Executes custom command for _swaynag_. Default is _swaynag_. Additional
@@ -66,17 +81,21 @@ The following commands may only be used in the configuration file.
 	arguments. This should be placed at the top of the config for the best
 	results.
 
+	It can be disabled by setting the command to a single dash:
+	_swaynag\_command -_
+
 The following commands cannot be used directly in the configuration file.
 They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 
-*border* normal|pixel [<n>]
+*border* none|normal|csd|pixel [<n>]
 	Set border style for focused window. _normal_ includes a border of
 	thickness _n_ and a title bar. _pixel_ is a border without title bar _n_
-	pixels thick. Default is _normal_ with border thickness 2.
+	pixels thick. Default is _normal_ with border thickness 2. _csd_ is short
+	for client-side-decorations, which allows the client to draw its own
+	decorations.
 
-*border* none|toggle
-	Set border style for focused window to _none_ or _toggle_ between the
-	available border styles: _normal_, _pixel_, _none_.
+*border* toggle
+	Cycles through the available border styles.
 
 *exit*
 	Exit sway and end your Wayland session.
@@ -114,6 +133,13 @@ They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 *fullscreen*
 	Toggles fullscreen for the focused view.
 
+*gaps* inner|outer|horizontal|vertical|top|right|bottom|left all|current
+set|plus|minus <amount>
+	Changes the _inner_ or _outer_ gaps for either _all_ workspaces or the
+	_current_ workspace. _outer_ gaps can be altered per side with _top_,
+	_right_, _bottom_, and _left_ or per direction with _horizontal_ and
+	_vertical_.
+
 *layout* default|splith|splitv|stacking|tabbed
 	Sets the layout mode of the focused container.
 
@@ -132,11 +158,16 @@ They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 	If unspecified, the default is 10 pixels. Pixels are ignored when moving
 	tiled containers.
 
-*move* [absolute] position <pos_x> [px] <pos_y> [px]
-	Moves the focused container to the specified position.
+*move* [absolute] position <pos\_x> [px] <pos\_y> [px]
+	Moves the focused container to the specified position in the workspace. If
+	_absolute_ is used, the position is relative to all outputs.
 
-*move* [absolute] position center|mouse
-	Moves the focused container to be centered on the workspace or mouse.
+*move* [absolute] position center
+	Moves the focused container to be centered on the workspace. If _absolute_
+	is used, it is moved to the center of all outputs.
+
+*move* position cursor|mouse|pointer
+	Moves the focused container to be centered on the cursor.
 
 *move* container|window [to] mark <mark>
 	Moves the focused container to the specified mark.
@@ -154,7 +185,7 @@ They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 	Moves the focused container to the previous or next workspace on this
 	output, wrapping around if already at the first or last workspace.
 
-*move* container|window [to] workspace back_and_forth
+*move* container|window [to] workspace back\_and\_forth
 	Moves the focused container to previously focused workspace.
 
 *move* container|window|workspace [to] output <name>
@@ -167,6 +198,10 @@ They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 *move* [to] scratchpad
 	Moves the focused window to the scratchpad.
 
+*nop* <comment>
+	A no operation command that can be used to override default behaviour. The
+	optional comment argument is ignored, but logged for debugging purposes.
+
 *reload*
 	Reloads the sway config file and applies any changes.
 
@@ -175,11 +210,23 @@ They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 	percentage points. If the units are omitted, floating containers are resized
 	in px and tiled containers by ppt. _amount_ will default to 10 if omitted.
 
-*resize set* <width> [px|ppt] <height> [px|ppt]
-	Sets the width and height of the currently focused container to _width_ and
-	_height_, specified in pixels or percentage points. If the units are
-	omitted, floating containers are resized in px and tiled containers by ppt.
-	If _width_ or _height_ is 0, no resize is done on that axis.
+*resize set* height <height> [px|ppt]
+	Sets the height of the container to _height_, specified in pixels or
+	percentage points. If the units are omitted, floating containers are
+	resized in px and tiled containers by ppt. If _height_ is 0, the container
+	will not be resized.
+
+*resize set* [width] <width> [px|ppt]
+	Sets the width of the container to _width_, specified in pixels or
+	percentage points. If the units are omitted, floating containers are
+	resized in px and tiled containers by ppt. If _width_ is 0, the container
+	will not be resized.
+
+*resize set* [width] <width> [px|ppt] [height] <height> [px|ppt]
+	Sets the width and height of the container to _width_ and _height_,
+	specified in pixels or percentage points. If the units are omitted,
+	floating containers are resized in px and tiled containers by ppt. If
+	_width_ or _height_ is 0, the container will not be resized on that axis.
 
 *scratchpad show*
 	Shows a window from the scratchpad. Repeatedly using this command will
@@ -215,27 +262,37 @@ They are expected to be used with *bindsym* or at runtime through *swaymsg*(1).
 The following commands may be used either in the configuration file or at
 runtime.
 
-*assign* <criteria> [→] <workspace>
+*assign* <criteria> [→] [workspace] [number] <workspace>
 	Assigns views matching _criteria_ (see *CRITERIA* for details) to
 	_workspace_. The → (U+2192) is optional and cosmetic. This command is
 	equivalent to:
 
 		for\_window <criteria> move container to workspace <workspace>
 
-*bindsym* [--release|--locked] <key combo> <command>
+*assign* <criteria> [→] output left|right|up|down|<name>
+	Assigns views matching _criteria_ (see *CRITERIA* for details) to the
+	specified output. The → (U+2192) is optional and cosmetic. This command is
+	equivalent to:
+
+		for\_window <criteria> move container to output <output>
+
+*bindsym* [--release|--locked] [--input-device=<device>] <key combo> <command>
 	Binds _key combo_ to execute the sway command _command_ when pressed. You
 	may use XKB key names here (*xev*(1) is a good tool for discovering these).
 	With the flag _--release_, the command is executed when the key combo is
 	released. Unless the flag _--locked_ is set, the command will not be run
-	when a screen locking program is active.
+	when a screen locking program is active. If _input-device_ is given, the
+	binding will only be executed for that input device and will be executed
+	instead of any binding that is generic to all devices.
 
 	Example:
-
+```
 		# Execute firefox when alt, shift, and f are pressed together
 		bindsym Mod1+Shift+f exec firefox
+```
 
-	*bindcode* [--release|--locked] <code> <command> is also available for
-	binding with key codes instead of key names.
+	*bindcode* [--release|--locked] [--input-device=<device>] <code> <command>
+	is also available for binding with key codes instead of key names.
 
 *client.<class>* <border> <background> <text> <indicator> <child\_border>
 	Configures the color of window borders and title bars. All 5 colors are
@@ -326,6 +383,7 @@ The default colors are:
 :  #000000
 :  #0c0c0c
 
+
 *debuglog* on|off|toggle
 	Enables, disables or toggles debug logging. _toggle_ cannot be used in the
 	configuration file.
@@ -361,8 +419,10 @@ The default colors are:
 	specified direction while holding the floating modifier. Resets the
 	command, when given no arguments.
 
-*focus\_follows\_mouse* yes|no
-	If set to _yes_, moving your mouse over a window will focus that window.
+*focus\_follows\_mouse* yes|no|always
+	If set to _yes_, moving your mouse over a window will focus that window. If
+	set to _always_, the window under the cursor will always be focused, even 
+	after switching between workspaces.
 
 *focus\_wrapping* yes|no|force
 	This option determines what to do when attempting to focus over the edge
@@ -386,42 +446,29 @@ The default colors are:
 	_focus\_wrapping force_. This is only available for convenience. Please
 	use _focus\_wrapping_ instead when possible.
 
-*gaps* edge\_gaps on|off|toggle
-	When _on_, gaps will be added between windows and workspace edges if the
-	inner gap is nonzero. When _off_, gaps will only be added between views.
-	_toggle_ cannot be used in the configuration file.
+*gaps* inner|outer|horizontal|vertical|top|right|bottom|left <amount>
+	Sets default _amount_ pixels of _inner_ or _outer_ gap, where the inner
+	affects spacing around each view and outer affects the spacing around each
+	workspace. Outer gaps are in addition to inner gaps. To reduce or remove
+	outer gaps, outer gaps can be set to a negative value. _outer_ gaps can
+	also be specified per side with _top_, _right_, _bottom_, and _left_ or
+	per direction with _horizontal_ and _vertical_.
 
-*gaps* <amount>
-	Sets _amount_ pixels of gap between windows and around each workspace.
+	This affects new workspaces only, and is used when the workspace doesn't
+	have its own gaps settings (see: workspace <ws> gaps ...).
 
-*gaps* inner|outer <amount>
-	Sets default _amount_ pixels of _inner_ or _outer_ gap, where the former
-	affects spacing between views and the latter affects the space around each
-	workspace.
-
-*gaps* inner|outer all|workspace|current set|plus|minus <amount>
-	Changes the gaps for the _inner_ or _outer_ gap. _all_ changes the gaps for
-	all views or workspace, _workspace_ changes gaps for all views in current
-	workspace (or current workspace), and _current_ changes gaps for the current
-	view or workspace.
-
-*hide\_edge\_borders* none|vertical|horizontal|both|smart
+*hide\_edge\_borders* none|vertical|horizontal|both|smart|smart\_no\_gaps
 	Hides window borders adjacent to the screen edges. Default is _none_.
 
-*input* <input\_device> *{* <commands...> *}*
-	_commands..._ after *{* will be interpreted as input commands applying to
-	the specified input device. For details, see *sway-input*(5). A newline is
-	required between *{* and the first command, and *}* must be alone on a
-	line.
+*input* <input\_device> <input-subcommands...>
+	For details on input subcommands, see *sway-input*(5).
 
 	\* may be used in lieu of a specific device name to configure all input
 	devices. A list of input device names may be obtained via *swaymsg -t
 	get\_inputs*.
 
-*seat* <seat> *{* <commands...> *}*
-	_commands..._ after *{* will be interpreted as seat commands applying to
-	the specified seat. For details, see *sway-input*(5). A newline is required
-	between *{* and the first command, and *}* must be alone on a line.
+*seat* <seat> <seat-subcommands...>
+	For details on seat subcommands, see *sway-input*(5).
 
 *seat* <seat> cursor move|set <x> <y>
 	Move specified seat's cursor relative to current position or wrap to
@@ -434,6 +481,12 @@ The default colors are:
 
 *kill*
 	Kills (closes) the currently focused container and all of its children.
+
+*smart\_borders* on|no\_gaps|off
+	If smart\_borders are _on_, borders will only be enabled if the workspace
+	only has one visible child (identical to _hide\_edge\_borders_ smart). If
+	smart\_borders is set to _no\_gaps_, borders will only be enabled if the
+	workspace only has one visible child and gaps greater than zero.
 
 *smart\_gaps* on|off
 	If smart\_gaps are _on_ gaps will only be enabled if a workspace has more
@@ -449,76 +502,39 @@ The default colors are:
 *mode* <mode>
 	Switches to the specified mode. The default mode _default_.
 
-*mode* [--pango\_markup] <mode> *{* <commands...> *}*
-	_commands..._ after *{* will be added to the specified mode. A newline is
-	required between *{* and the first command, and *}* must be alone on a
-	line. Only *bindsym* and *bindcode* commands are permitted in mode blocks.
+*mode* [--pango\_markup] <mode> <mode-subcommands...>
+	The only two valid _mode-subcommands..._ are *bindsym* and *bindcode*.
 	If _--pango\_markup_ is given, then _mode_ will be interpreted as pango
 	markup.
 
-*mouse\_warping* output|none
+*mouse\_warping* output|container|none
 	If _output_ is specified, the mouse will be moved to new outputs as you
-	move focus between them. Default is _output_.
+	move focus between them. If _container_ is specified, the mouse will be
+	moved to the middle of the container on switch. Default is _output_.
 
 *no\_focus* <criteria>
 	Prevents windows matching <criteria> from being focused automatically when
 	they're created. This has no effect on the first window in a workspace.
 
-*output* <name> mode|resolution|res <WIDTHxHEIGHT>[@<RATE>[Hz]]
-	Configures the specified output to use the given mode. Modes are a
-	combination of width and height (in pixels) and a refresh rate that your
-	display can be configured to use. For a list of available modes for each
-	output, use *swaymsg -t get\_outputs*.
+*output* <output\_name> <output-subcommands...>
+	For details on output subcommands, see *sway-output*(5).
 
-	Examples:
+	\* may be used in lieu of a specific output name to configure all outputs.
+	A list of output names may be obtained via *swaymsg -t get\_outputs*.
 
-		output HDMI-A-1 mode 1920x1080
+*popup\_during\_fullscreen* smart|ignore|leave\_fullscreen
+	Determines what to do when a fullscreen view opens a dialog.
+	If _smart_ (the default), the dialog will be displayed. If _ignore_, the
+	dialog will not be rendered. If _leave\_fullscreen_, the view will exit
+	fullscreen mode and the dialog will be rendered.
 
-		output HDMI-A-1 mode 1920x1080@60Hz
-
-*output* <name> position|pos <X,Y>
-	Places the specified output at the specific position in the global
-	coordinate space.
-
-*output* <name> scale <factor>
-	Scales the specified output by the specified scale _factor_. An integer is
-	recommended, but fractional values are also supported. If a fractional
-	value are specified, be warned that it is not possible to faithfully
-	represent the contents of your windows - they will be rendered at the next
-	highest integral scale factor and downscaled. You may be better served by
-	setting an integral scale factor and adjusting the font size of your
-	applications to taste.
-
-*output* <name> background|bg <file> <mode> [<fallback\_color>]
-	Sets the wallpaper for the given output to the specified file, using the
-	given scaling mode (one of "stretch", "fill", "fit", "center", "tile"). If
-	the specified file cannot be accessed or if the image does fill the entire
-	output, a fallback color may be provided to cover the rest of the output.
-	__fallback\_color__ should be specified as _#RRGGBB_. Alpha is not
-	supported.
-
-**output** <name> background|bg <color> solid\_color
-	Sets the background of the given output to the specified color. _color_
-	should be specified as _#RRGGBB_. Alpha is not supported.
-
-**output** <name> transform <transform>
-	Sets the background transform to the given value. Can be one of "90", "180",
-	"270" for rotation; or "flipped", "flipped-90", "flipped-180", "flipped-270"
-	to apply a rotation and flip, or "normal" to apply no transform.
-
-*output* <name> disable|enable
-	Enables or disables the specified output (all outputs are enabled by
-	default).
-
-*NOTES FOR THE OUTPUT COMMANDS*
-
-You may combine output commands into one, like so:
-
-	output HDMI-A-1 mode 1920x1080 pos 1920,0 bg ~/wallpaper.png stretch
-
-You can get a list of output names with *swaymsg -t get\_outputs*. You may also
-match any output by using the output name "\*". Be sure to add this output
-config after the others, or it will be matched instead of the others.
+*set* $<name> <value>
+	Sets variable $_name_ to _value_. You can use the new variable in the
+	arguments of future commands. When the variable is used, it can be escaped
+	with an additional $ (ie $$_name_) to have the replacement happen at run
+	time instead of when reading the config. However, it does not always make
+	sense for the variable to be replaced at run time since some arguments do
+	need to be known at config time.
 
 *show\_marks* yes|no
 	If *show\_marks* is yes, marks will be displayed in the window borders.
@@ -549,11 +565,20 @@ config after the others, or it will be matched instead of the others.
 *workspace* prev\_on\_output|next\_on\_output
 	Switches to the next workspace on the current output.
 
-*workspace* back_and_forth
+*workspace* back\_and\_forth
 	Switches to the previously focused workspace.
 
-*workspace* <name> output <output>
-	Specifies that workspace _name_ should be shown on the specified _output_.
+*workspace* <name> gaps inner|outer|horizontal|vertical|top|right|bottom|left
+<amount>
+	Specifies that workspace _name_ should have the given gaps settings when it
+	is created.
+
+*workspace* <name> output <outputs...>
+	Specifies that workspace _name_ should be shown on the specified _outputs_.
+	Multiple outputs can be listed and the first available will be used. If the
+	workspace gets placed on an output further down the list and an output that
+	is higher on the list becomes available, the workspace will be move to the
+	higher priority output.
 
 *workspace\_auto\_back\_and\_forth* yes|no
 	When _yes_, repeating a workspace switch command will switch back to the
@@ -563,6 +588,18 @@ config after the others, or it will be matched instead of the others.
 
 *workspace\_layout* default|stacking|tabbed
 	Specifies the initial layout for new workspaces.
+
+# BAR CONTROL
+
+*bar hidden\_state* hide|show|toggle [<bar\_id>]
+	Sets the hidden state of the bar (see *sway-bar*(5)), either individually,
+	by specifying a bar id, or if none is given, for all bar instances.
+	_toggle_ switches between _hide_ and _show_.
+
+*bar mode* dock|hide|invisible|toggle [<bar\_id>]
+	Sets the mode of the bar (see *sway-bar*(5)), either individually,
+	by specifying a bar id, or if none is given, for all bar instances.
+	_toggle_ switches between _dock_ and _hide_.
 
 # CRITERIA
 
@@ -664,4 +701,4 @@ The following attributes may be matched with:
 
 # SEE ALSO
 
-*sway*(1) *sway-input*(5) *sway-bar*(5)
+*sway*(1) *sway-input*(5) *sway-output*(5) *sway-bar*(5)

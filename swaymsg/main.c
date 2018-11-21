@@ -23,7 +23,7 @@ static bool success_object(json_object *result) {
 	json_object *success;
 
 	if (!json_object_object_get_ex(result, "success", &success)) {
-		return false;
+		return true;
 	}
 
 	return json_object_get_boolean(success);
@@ -111,7 +111,7 @@ static const char *pretty_type_name(const char *name) {
 }
 
 static void pretty_print_input(json_object *i) {
-	json_object *id, *name, *type, *product, *vendor;
+	json_object *id, *name, *type, *product, *vendor, *kbdlayout;
 	json_object_object_get_ex(i, "identifier", &id);
 	json_object_object_get_ex(i, "name", &name);
 	json_object_object_get_ex(i, "type", &type);
@@ -123,7 +123,7 @@ static void pretty_print_input(json_object *i) {
 		"  Type: %s\n"
 		"  Identifier: %s\n"
 		"  Product ID: %d\n"
-		"  Vendor ID: %d\n\n";
+		"  Vendor ID: %d\n";
 
 
 	printf(fmt, json_object_get_string(name),
@@ -131,6 +131,13 @@ static void pretty_print_input(json_object *i) {
 		json_object_get_string(id),
 		json_object_get_int(product),
 		json_object_get_int(vendor));
+
+	if (json_object_object_get_ex(i, "xkb_active_layout_name", &kbdlayout)) {
+		printf("  Active Keyboard Layout: %s\n",
+			json_object_get_string(kbdlayout));
+	}
+
+	printf("\n");
 }
 
 static void pretty_print_seat(json_object *i) {
@@ -163,33 +170,35 @@ static void pretty_print_seat(json_object *i) {
 }
 
 static void pretty_print_output(json_object *o) {
-	json_object *name, *rect, *focused, *active, *ws;
+	json_object *name, *rect, *focused, *active, *ws, *current_mode;
 	json_object_object_get_ex(o, "name", &name);
 	json_object_object_get_ex(o, "rect", &rect);
 	json_object_object_get_ex(o, "focused", &focused);
 	json_object_object_get_ex(o, "active", &active);
 	json_object_object_get_ex(o, "current_workspace", &ws);
-	json_object *make, *model, *serial, *scale, *refresh, *transform;
+	json_object *make, *model, *serial, *scale, *transform;
 	json_object_object_get_ex(o, "make", &make);
 	json_object_object_get_ex(o, "model", &model);
 	json_object_object_get_ex(o, "serial", &serial);
 	json_object_object_get_ex(o, "scale", &scale);
-	json_object_object_get_ex(o, "refresh", &refresh);
 	json_object_object_get_ex(o, "transform", &transform);
-	json_object *x, *y, *width, *height;
+	json_object *x, *y;
 	json_object_object_get_ex(rect, "x", &x);
 	json_object_object_get_ex(rect, "y", &y);
-	json_object_object_get_ex(rect, "width", &width);
-	json_object_object_get_ex(rect, "height", &height);
 	json_object *modes;
 	json_object_object_get_ex(o, "modes", &modes);
+	json_object *width, *height, *refresh;
+	json_object_object_get_ex(o, "current_mode", &current_mode);
+	json_object_object_get_ex(current_mode, "width", &width);
+	json_object_object_get_ex(current_mode, "height", &height);
+	json_object_object_get_ex(current_mode, "refresh", &refresh);
 
 	if (json_object_get_boolean(active)) {
 		printf(
 			"Output %s '%s %s %s'%s\n"
 			"  Current mode: %dx%d @ %f Hz\n"
 			"  Position: %d,%d\n"
-			"  Scale factor: %dx\n"
+			"  Scale factor: %f\n"
 			"  Transform: %s\n"
 			"  Workspace: %s\n",
 			json_object_get_string(name),
@@ -197,10 +206,11 @@ static void pretty_print_output(json_object *o) {
 			json_object_get_string(model),
 			json_object_get_string(serial),
 			json_object_get_boolean(focused) ? " (focused)" : "",
-			json_object_get_int(width), json_object_get_int(height),
+			json_object_get_int(width),
+			json_object_get_int(height),
 			(float)json_object_get_int(refresh) / 1000,
 			json_object_get_int(x), json_object_get_int(y),
-			json_object_get_int(scale),
+			json_object_get_double(scale),
 			json_object_get_string(transform),
 			json_object_get_string(ws)
 		);
@@ -345,7 +355,7 @@ int main(int argc, char **argv) {
 			cmdtype = strdup(optarg);
 			break;
 		case 'v':
-			fprintf(stdout, "sway version " SWAY_VERSION "\n");
+			fprintf(stdout, "swaymsg version " SWAY_VERSION "\n");
 			exit(EXIT_SUCCESS);
 			break;
 		default:

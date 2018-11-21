@@ -11,22 +11,22 @@
 #include <wlr/types/wlr_gamma_control.h>
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_idle.h>
-#include <wlr/types/wlr_layer_shell.h>
-#include <wlr/types/wlr_linux_dmabuf_v1.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xcursor_manager.h>
-#include <wlr/types/wlr_xdg_output.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/util/log.h>
 #include "list.h"
 #include "sway/config.h"
 #include "sway/desktop/idle_inhibit_v1.h"
 #include "sway/input/input-manager.h"
 #include "sway/server.h"
-#include "sway/tree/layout.h"
+#include "sway/tree/root.h"
 #include "config.h"
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 #include "sway/xwayland.h"
 #endif
 
@@ -62,14 +62,13 @@ bool server_init(struct sway_server *server) {
 	server->new_output.notify = handle_new_output;
 	wl_signal_add(&server->backend->events.new_output, &server->new_output);
 
-	wlr_xdg_output_manager_create(server->wl_display,
-			root_container.sway_root->output_layout);
+	wlr_xdg_output_manager_v1_create(server->wl_display, root->output_layout);
 
 	server->idle = wlr_idle_create(server->wl_display);
 	server->idle_inhibit_manager_v1 =
 		sway_idle_inhibit_manager_v1_create(server->wl_display, server->idle);
 
-	server->layer_shell = wlr_layer_shell_create(server->wl_display);
+	server->layer_shell = wlr_layer_shell_v1_create(server->wl_display);
 	wl_signal_add(&server->layer_shell->events.new_surface,
 		&server->layer_shell_surface);
 	server->layer_shell_surface.notify = handle_layer_shell_surface;
@@ -84,7 +83,18 @@ bool server_init(struct sway_server *server) {
 		&server->xdg_shell_surface);
 	server->xdg_shell_surface.notify = handle_xdg_shell_surface;
 
-#ifdef HAVE_XWAYLAND
+	// TODO: configurable cursor theme and size
+	int cursor_size = 24;
+	const char *cursor_theme = NULL;
+
+	char cursor_size_fmt[16];
+	snprintf(cursor_size_fmt, sizeof(cursor_size_fmt), "%d", cursor_size);
+	setenv("XCURSOR_SIZE", cursor_size_fmt, 1);
+	if (cursor_theme != NULL) {
+		setenv("XCURSOR_THEME", cursor_theme, 1);
+	}
+
+#if HAVE_XWAYLAND
 	server->xwayland.wlr_xwayland =
 		wlr_xwayland_create(server->wl_display, server->compositor, true);
 	wl_signal_add(&server->xwayland.wlr_xwayland->events.new_surface,
@@ -94,8 +104,8 @@ bool server_init(struct sway_server *server) {
 		&server->xwayland_ready);
 	server->xwayland_ready.notify = handle_xwayland_ready;
 
-	// TODO: configurable cursor theme and size
-	server->xwayland.xcursor_manager = wlr_xcursor_manager_create(NULL, 24);
+	server->xwayland.xcursor_manager =
+		wlr_xcursor_manager_create(cursor_theme, cursor_size);
 	wlr_xcursor_manager_load(server->xwayland.xcursor_manager, 1);
 	struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(
 		server->xwayland.xcursor_manager, "left_ptr", 1);
@@ -117,7 +127,17 @@ bool server_init(struct sway_server *server) {
 	server->server_decoration.notify = handle_server_decoration;
 	wl_list_init(&server->decorations);
 
-	wlr_linux_dmabuf_v1_create(server->wl_display, renderer);
+	server->xdg_decoration_manager =
+		wlr_xdg_decoration_manager_v1_create(server->wl_display);
+	wl_signal_add(
+			&server->xdg_decoration_manager->events.new_toplevel_decoration,
+			&server->xdg_decoration);
+	server->xdg_decoration.notify = handle_xdg_decoration;
+	wl_list_init(&server->xdg_decorations);
+
+	server->presentation =
+		wlr_presentation_create(server->wl_display, server->backend);
+
 	wlr_export_dmabuf_manager_v1_create(server->wl_display);
 	wlr_screencopy_manager_v1_create(server->wl_display);
 
@@ -128,21 +148,28 @@ bool server_init(struct sway_server *server) {
 		return false;
 	}
 
-	const char *debug = getenv("SWAY_DEBUG");
-	if (debug != NULL && strcmp(debug, "txn_timings") == 0) {
-		server->debug_txn_timings = true;
+	// This may have been set already via -Dtxn-timeout
+	if (!server->txn_timeout_ms) {
+		server->txn_timeout_ms = 200;
 	}
-	server->dirty_containers = create_list();
+
+	server->dirty_nodes = create_list();
 	server->transactions = create_list();
 
-	input_manager = input_manager_create(server);
+	server->input = input_manager_create(server);
+	input_manager_get_default_seat(); // create seat0
+
 	return true;
 }
 
 void server_fini(struct sway_server *server) {
 	// TODO: free sway-specific resources
+#if HAVE_XWAYLAND
+	wlr_xwayland_destroy(server->xwayland.wlr_xwayland);
+#endif
+	wl_display_destroy_clients(server->wl_display);
 	wl_display_destroy(server->wl_display);
-	list_free(server->dirty_containers);
+	list_free(server->dirty_nodes);
 	list_free(server->transactions);
 }
 

@@ -1,4 +1,4 @@
-#define _XOPEN_SOURCE 500
+#define _POSIX_C_SOURCE 200809
 #include <libgen.h>
 #include <strings.h>
 #include <unistd.h>
@@ -61,8 +61,14 @@ struct cmd_results *output_cmd_background(int argc, char **argv) {
 				"Missing background scaling mode.");
 		}
 
-		wordexp_t p;
+		wordexp_t p = {0};
 		char *src = join_args(argv, j);
+		while (strstr(src, "  ")) {
+			src = realloc(src, strlen(src) + 2);
+			char *ptr = strstr(src, "  ") + 1;
+			memmove(ptr + 1, ptr, strlen(ptr) + 1);
+			*ptr = '\\';
+		}
 		if (wordexp(src, &p, 0) != 0 || p.we_wordv[0] == NULL) {
 			struct cmd_results *cmd_res = cmd_results_new(CMD_INVALID, "output",
 				"Invalid syntax (%s)", src);
@@ -71,7 +77,7 @@ struct cmd_results *output_cmd_background(int argc, char **argv) {
 			return cmd_res;
 		}
 		free(src);
-		src = strdup(p.we_wordv[0]);
+		src = join_args(p.we_wordv, p.we_wordc);
 		wordfree(&p);
 		if (!src) {
 			wlr_log(WLR_ERROR, "Failed to duplicate string");
@@ -117,6 +123,16 @@ struct cmd_results *output_cmd_background(int argc, char **argv) {
 			}
 			free(src);
 		} else {
+			// Escape double quotes in the final path for swaybg
+			for (size_t i = 0; i < strlen(src); i++) {
+				if (src[i] == '"') {
+					src = realloc(src, strlen(src) + 2);
+					memmove(src + i + 1, src + i, strlen(src + i) + 1);
+					*(src + i) = '\\';
+					i++;
+				}
+			}
+
 			output->background = src;
 			output->background_option = strdup(mode);
 		}

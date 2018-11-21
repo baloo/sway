@@ -7,10 +7,11 @@
 #include "tree/view.h"
 
 enum criteria_type {
-	CT_COMMAND          = 1 << 0,
-	CT_ASSIGN_OUTPUT    = 1 << 1,
-	CT_ASSIGN_WORKSPACE = 1 << 2,
-	CT_NO_FOCUS         = 1 << 3,
+	CT_COMMAND                 = 1 << 0,
+	CT_ASSIGN_OUTPUT           = 1 << 1,
+	CT_ASSIGN_WORKSPACE        = 1 << 2,
+	CT_ASSIGN_WORKSPACE_NUMBER = 1 << 3,
+	CT_NO_FOCUS                = 1 << 4,
 };
 
 struct criteria {
@@ -22,15 +23,15 @@ struct criteria {
 	pcre *title;
 	pcre *shell;
 	pcre *app_id;
-	pcre *class;
-	pcre *instance;
 	pcre *con_mark;
 	uint32_t con_id; // internal ID
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
+	pcre *class;
 	uint32_t id; // X11 window ID
-#endif
+	pcre *instance;
 	pcre *window_role;
-	uint32_t window_type;
+	enum atom_name window_type;
+#endif
 	bool floating;
 	bool tiling;
 	char urgent; // 'l' for latest or 'o' for oldest

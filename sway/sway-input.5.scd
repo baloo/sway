@@ -7,12 +7,17 @@ sway-input - input configuration file and commands
 # DESCRIPTION
 
 Sway allows for configuration of devices within the sway configuration file.
-sway-input commands must be used inside an _input { }_ block in the config.
 To obtain a list of available device identifiers, run *swaymsg -t get\_inputs*.
 
 # INPUT COMMANDS
 
 ## KEYBOARD CONFIGURATION
+
+*input* <identifier> repeat\_delay <n>
+	Sets the delay before repeating a held-down key, in milliseconds.
+
+*input* <identifier> repeat\_rate <n>
+	Sets the key repeat rate in number of keypresses per second.
 
 For more information on these xkb configuration options, see
 *xkeyboard-config*(7).
@@ -36,10 +41,10 @@ For more information on these xkb configuration options, see
 The following commands may only be used in the configuration file.
 
 *input* <identifier> xkb\_capslock enabled|disabled
-	Initially enables or disables CapsLock, the default is disabled.
+	Initially enables or disables CapsLock on startup, the default is disabled.
 
 *input* <identifier> xkb\_numlock enabled|disabled
-	Initially enables or disables NumLock, the default is disabled.
+	Initially enables or disables NumLock on startup, the default is disabled.
 
 ## MAPPING CONFIGURATION
 
@@ -67,6 +72,9 @@ The following commands may only be used in the configuration file.
 
 *input* <identifier> click\_method none|button\_areas|clickfinger
 	Changes the click method for the specified device.
+
+*input* <identifier> drag enabled|disabled
+	Enables or disables tap-and-drag for specified input device.
 
 *input* <identifier> drag\_lock enabled|disabled
 	Enables or disables drag lock for specified input device.
@@ -97,13 +105,17 @@ The following commands may only be used in the configuration file.
 *input* <identifier> repeat\_rate <characters per second>
 	Sets the frequency of key repeats once the repeat\_delay has passed.
 
-*input* <identifier> scroll\_method none|two\_finger|edge|on\_button\_down
-	Changes the scroll method for the specified input device.
-
 *input* <identifier> scroll\_button <button\_identifier>
 	Sets button used for scroll\_method on\_button\_down. The button identifier
 	can be obtained from `libinput debug-events`.
 	If set to 0, it disables the scroll\_button on\_button\_down.
+
+*input* <identifier> scroll\_factor <floating point value>
+	Changes the scroll factor for the specified input device. Scroll speed will
+	be scaled by the given value, which must be non-negative.
+
+*input* <identifier> scroll\_method none|two\_finger|edge|on\_button\_down
+	Changes the scroll method for the specified input device.
 
 *input* <identifier> tap enabled|disabled
 	Enables or disables tap for specified input device.
@@ -116,8 +128,7 @@ The following commands may only be used in the configuration file.
 
 ## SEAT CONFIGURATION
 
-Configure options for multiseat mode. sway-seat commands must be used inside a
-_seat { }_ block in the config.
+Configure options for multiseat mode.
 
 A *seat* is a collection of input devices that act independently of each other.
 Seats are identified by name and the default seat is _seat0_ if no seats are
@@ -136,4 +147,4 @@ in their own "seat").
 
 # SEE ALSO
 
-*sway*(5)
+*sway*(5) *sway-output*(5)

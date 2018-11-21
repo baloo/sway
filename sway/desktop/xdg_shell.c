@@ -7,15 +7,33 @@
 #include <wlr/util/edges.h>
 #include "log.h"
 #include "sway/decoration.h"
+#include "sway/desktop.h"
+#include "sway/desktop/transaction.h"
+#include "sway/input/cursor.h"
 #include "sway/input/input-manager.h"
 #include "sway/input/seat.h"
+#include "sway/output.h"
 #include "sway/server.h"
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
-#include "sway/tree/layout.h"
 #include "sway/tree/view.h"
+#include "sway/tree/workspace.h"
 
 static const struct sway_view_child_impl popup_impl;
+
+static void popup_get_root_coords(struct sway_view_child *child,
+		int *root_sx, int *root_sy) {
+	struct sway_xdg_popup *popup = (struct sway_xdg_popup *)child;
+	struct wlr_xdg_surface *surface = popup->wlr_xdg_surface;
+
+	int x_offset = -child->view->geometry.x - surface->geometry.x;
+	int y_offset = -child->view->geometry.y - surface->geometry.y;
+
+	wlr_xdg_popup_get_toplevel_coords(surface->popup,
+		x_offset + surface->popup->geometry.x,
+		y_offset + surface->popup->geometry.y,
+		root_sx, root_sy);
+}
 
 static void popup_destroy(struct sway_view_child *child) {
 	if (!sway_assert(child->impl == &popup_impl,
@@ -29,6 +47,7 @@ static void popup_destroy(struct sway_view_child *child) {
 }
 
 static const struct sway_view_child_impl popup_impl = {
+	.get_root_coords = popup_get_root_coords,
 	.destroy = popup_destroy,
 };
 
@@ -51,13 +70,13 @@ static void popup_unconstrain(struct sway_xdg_popup *popup) {
 	struct sway_view *view = popup->child.view;
 	struct wlr_xdg_popup *wlr_popup = popup->wlr_xdg_surface->popup;
 
-	struct sway_container *output = container_parent(view->swayc, C_OUTPUT);
+	struct sway_output *output = view->container->workspace->output;
 
 	// the output box expressed in the coordinate system of the toplevel parent
 	// of the popup
 	struct wlr_box output_toplevel_sx_box = {
-		.x = output->x - view->x,
-		.y = output->y - view->y,
+		.x = output->lx - view->container->content_x,
+		.y = output->ly - view->container->content_y,
 		.width = output->width,
 		.height = output->height,
 	};
@@ -81,6 +100,9 @@ static struct sway_xdg_popup *popup_create(
 	popup->new_popup.notify = popup_handle_new_popup;
 	wl_signal_add(&xdg_surface->events.destroy, &popup->destroy);
 	popup->destroy.notify = popup_handle_destroy;
+
+	wl_signal_add(&xdg_surface->events.map, &popup->child.surface_map);
+	wl_signal_add(&xdg_surface->events.unmap, &popup->child.surface_unmap);
 
 	popup_unconstrain(popup);
 
@@ -107,7 +129,8 @@ static void get_constraints(struct sway_view *view, double *min_width,
 	*max_height = state->max_height > 0 ? state->max_height : DBL_MAX;
 }
 
-static const char *get_string_prop(struct sway_view *view, enum sway_view_prop prop) {
+static const char *get_string_prop(struct sway_view *view,
+		enum sway_view_prop prop) {
 	if (xdg_shell_view_from_view(view) == NULL) {
 		return NULL;
 	}
@@ -166,18 +189,9 @@ static bool wants_floating(struct sway_view *view) {
 	struct wlr_xdg_toplevel *toplevel = view->wlr_xdg_surface->toplevel;
 	struct wlr_xdg_toplevel_state *state = &toplevel->current;
 	return (state->min_width != 0 && state->min_height != 0
-		&& state->min_width == state->max_width
-		&& state->min_height == state->max_height)
+		&& (state->min_width == state->max_width
+		|| state->min_height == state->max_height))
 		|| toplevel->parent;
-}
-
-static bool has_client_side_decorations(struct sway_view *view) {
-	struct sway_xdg_shell_view *xdg_shell_view =
-		xdg_shell_view_from_view(view);
-	if (xdg_shell_view == NULL) {
-		return true;
-	}
-	return xdg_shell_view->deco_mode != WLR_SERVER_DECORATION_MANAGER_MODE_SERVER;
 }
 
 static void for_each_surface(struct sway_view *view,
@@ -195,6 +209,21 @@ static void for_each_popup(struct sway_view *view,
 		return;
 	}
 	wlr_xdg_surface_for_each_popup(view->wlr_xdg_surface, iterator, user_data);
+}
+
+static bool is_transient_for(struct sway_view *child,
+		struct sway_view *ancestor) {
+	if (xdg_shell_view_from_view(child) == NULL) {
+		return false;
+	}
+	struct wlr_xdg_surface *surface = child->wlr_xdg_surface;
+	while (surface) {
+		if (surface->toplevel->parent == ancestor->wlr_xdg_surface) {
+			return true;
+		}
+		surface = surface->toplevel->parent;
+	}
+	return false;
 }
 
 static void _close(struct sway_view *view) {
@@ -236,9 +265,9 @@ static const struct sway_view_impl view_impl = {
 	.set_tiled = set_tiled,
 	.set_fullscreen = set_fullscreen,
 	.wants_floating = wants_floating,
-	.has_client_side_decorations = has_client_side_decorations,
 	.for_each_surface = for_each_surface,
 	.for_each_popup = for_each_popup,
+	.is_transient_for = is_transient_for,
 	.close = _close,
 	.close_popups = close_popups,
 	.destroy = destroy,
@@ -250,12 +279,27 @@ static void handle_commit(struct wl_listener *listener, void *data) {
 	struct sway_view *view = &xdg_shell_view->view;
 	struct wlr_xdg_surface *xdg_surface = view->wlr_xdg_surface;
 
-	if (!view->swayc) {
-		return;
-	}
+	if (view->container->node.instruction) {
+		wlr_xdg_surface_get_geometry(xdg_surface, &view->geometry);
+		transaction_notify_view_ready_by_serial(view,
+				xdg_surface->configure_serial);
+	} else {
+		struct wlr_box new_geo;
+		wlr_xdg_surface_get_geometry(xdg_surface, &new_geo);
+		struct sway_container *con = view->container;
 
-	if (view->swayc->instructions->length) {
-		transaction_notify_view_ready(view, xdg_surface->configure_serial);
+		if ((new_geo.width != con->content_width ||
+					new_geo.height != con->content_height) &&
+				container_is_floating(con)) {
+			// A floating view has unexpectedly sent a new size
+			desktop_damage_view(view);
+			view_update_size(view, new_geo.width, new_geo.height);
+			memcpy(&view->geometry, &new_geo, sizeof(struct wlr_box));
+			desktop_damage_view(view);
+			transaction_commit_dirty();
+		} else {
+			memcpy(&view->geometry, &new_geo, sizeof(struct wlr_box));
+		}
 	}
 
 	view_damage_from(view);
@@ -300,10 +344,9 @@ static void handle_request_fullscreen(struct wl_listener *listener, void *data) 
 		return;
 	}
 
-	container_set_fullscreen(view->swayc, e->fullscreen);
+	container_set_fullscreen(view->container, e->fullscreen);
 
-	struct sway_container *output = container_parent(view->swayc, C_OUTPUT);
-	arrange_windows(output);
+	arrange_workspace(view->container->workspace);
 	transaction_commit_dirty();
 }
 
@@ -311,13 +354,13 @@ static void handle_request_move(struct wl_listener *listener, void *data) {
 	struct sway_xdg_shell_view *xdg_shell_view =
 		wl_container_of(listener, xdg_shell_view, request_move);
 	struct sway_view *view = &xdg_shell_view->view;
-	if (!container_is_floating(view->swayc)) {
+	if (!container_is_floating(view->container)) {
 		return;
 	}
 	struct wlr_xdg_toplevel_move_event *e = data;
 	struct sway_seat *seat = e->seat->seat->data;
 	if (e->serial == seat->last_button_serial) {
-		seat_begin_move(seat, view->swayc, seat->last_button);
+		seat_begin_move_floating(seat, view->container, seat->last_button);
 	}
 }
 
@@ -325,13 +368,14 @@ static void handle_request_resize(struct wl_listener *listener, void *data) {
 	struct sway_xdg_shell_view *xdg_shell_view =
 		wl_container_of(listener, xdg_shell_view, request_resize);
 	struct sway_view *view = &xdg_shell_view->view;
-	if (!container_is_floating(view->swayc)) {
+	if (!container_is_floating(view->container)) {
 		return;
 	}
 	struct wlr_xdg_toplevel_resize_event *e = data;
 	struct sway_seat *seat = e->seat->seat->data;
 	if (e->serial == seat->last_button_serial) {
-		seat_begin_resize(seat, view->swayc, seat->last_button, e->edges);
+		seat_begin_resize_floating(seat, view->container,
+				seat->last_button, e->edges);
 	}
 }
 
@@ -368,23 +412,19 @@ static void handle_map(struct wl_listener *listener, void *data) {
 		view->natural_height = view->wlr_xdg_surface->surface->current.height;
 	}
 
-	struct sway_server_decoration *deco =
-		decoration_from_surface(xdg_surface->surface);
-	if (deco != NULL) {
-		xdg_shell_view->deco_mode = deco->wlr_server_decoration->mode;
-	} else {
-		xdg_shell_view->deco_mode = WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT;
+	bool csd = false;
+
+	if (!view->xdg_decoration) {
+		struct sway_server_decoration *deco =
+				decoration_from_surface(xdg_surface->surface);
+		csd = !deco || deco->wlr_server_decoration->mode ==
+			WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT;
+
 	}
 
-	view_map(view, view->wlr_xdg_surface->surface);
+	view_map(view, view->wlr_xdg_surface->surface,
+		xdg_surface->toplevel->client_pending.fullscreen, csd);
 
-	if (xdg_surface->toplevel->client_pending.fullscreen) {
-		container_set_fullscreen(view->swayc, true);
-		struct sway_container *ws = container_parent(view->swayc, C_WORKSPACE);
-		arrange_windows(ws);
-	} else {
-		arrange_windows(view->swayc->parent);
-	}
 	transaction_commit_dirty();
 
 	xdg_shell_view->commit.notify = handle_commit;
@@ -420,15 +460,14 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct sway_xdg_shell_view *xdg_shell_view =
 		wl_container_of(listener, xdg_shell_view, destroy);
 	struct sway_view *view = &xdg_shell_view->view;
-	if (!sway_assert(view->swayc == NULL || view->swayc->destroying,
-				"Tried to destroy a mapped view")) {
+	if (!sway_assert(view->surface == NULL, "Tried to destroy a mapped view")) {
 		return;
 	}
 	wl_list_remove(&xdg_shell_view->destroy.link);
 	wl_list_remove(&xdg_shell_view->map.link);
 	wl_list_remove(&xdg_shell_view->unmap.link);
 	view->wlr_xdg_surface = NULL;
-	view_destroy(view);
+	view_begin_destroy(view);
 }
 
 struct sway_view *view_from_wlr_xdg_surface(

@@ -1,12 +1,7 @@
 #ifndef _SWAY_STRINGOP_H
 #define _SWAY_STRINGOP_H
-#include <stdlib.h>
-#include "list.h"
 
-#if !HAVE_DECL_SETENV
-// Not sure why we need to provide this
-extern int setenv(const char *, const char *, int);
-#endif
+#include "list.h"
 
 // array of whitespace characters to use for delims
 extern const char whitespace[];
@@ -45,5 +40,7 @@ void add_quotes(char **argv, int argc);
 char *cmdsep(char **stringp, const char *delim);
 // Split string into 2 by delim, handle quotes
 char *argsep(char **stringp, const char *delim);
+
+const char *strcasestr(const char *haystack, const char *needle);
 
 #endif

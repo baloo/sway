@@ -6,8 +6,7 @@ sway-bar - bar configuration file and commands
 
 # DESCRIPTION
 
-Sway allows configuring swaybar in the sway configuration file. Swaybar
-commands must be used inside a _bar { }_ block in the config file.
+Sway allows configuring swaybar in the sway configuration file.
 
 # COMMANDS
 
@@ -17,6 +16,9 @@ commands must be used inside a _bar { }_ block in the config file.
 	bar. You may also use the i3bar JSON protocol:
 
 	https://i3wm.org/docs/i3bar-protocol.html
+
+	If running this command via IPC, you can disable a running status command by
+	setting the command to a single dash: _swaybar bar bar-0 status\_command -_
 
 *pango\_markup* enabled|disabled
 	Enables or disables pango markup for status lines. This has no effect on
@@ -48,6 +50,10 @@ commands must be used inside a _bar { }_ block in the config file.
 *workspace\_buttons* yes|no
 	Enables or disables workspace buttons on the bar. Default is _yes_.
 
+*strip\_workspace\_name* yes|no
+	If set to _yes_, then workspace names will be omitted from the workspace
+	button and only the custom number will be shown. Default is _no_.
+
 *strip\_workspace\_numbers* yes|no
 	If set to _yes_, then workspace numbers will be omitted from the workspace
 	button and only the custom name will be shown. Default is _no_.
@@ -57,6 +63,27 @@ commands must be used inside a _bar { }_ block in the config file.
 
 *height* <height>
 	Sets the height of the bar. Default height will match the font size.
+
+*bindsym* [--release] button<n> <command>
+	Executes _command_ when mouse button _n_ has been pressed (or if _released_
+	is given, when mouse button _n_ has been released). To disable the default
+	behavior for a button, use the command _nop_.
+
+*mode* dock|hide|invisible
+	Specifies the visibility of the bar. In _dock_ mode, it is permanently
+	visible at one edge of the screen. In _hide_ mode, it is hidden unless the
+	modifier key is pressed, though this behaviour depends on the hidden state.
+	In _invisible_ mode, it is permanently hidden. Default is _dock_.
+
+*hidden\_state* hide|show
+	Specifies the behaviour of the bar when it is in _hide_ mode. When the
+	hidden state is _hide_, then it is normally hidden, and only unhidden by
+	pressing the modifier key or in case of urgency hints. When the hidden
+	state is _show_, then it is permanently visible, drawn on top of the
+	currently visible workspace. Default is _hide_.
+
+*modifier* <Modifier>|none
+	Specifies the modifier key that shows a hidden bar. Default is _Mod4_.
 
 ## TRAY
 

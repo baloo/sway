@@ -2,8 +2,8 @@ executable(
 	'swaybar', [
 		'bar.c',
 		'config.c',
-		'event_loop.c',
 		'i3bar.c',
+		'input.c',
 		'ipc.c',
 		'main.c',
 		'render.c',
@@ -24,5 +24,6 @@ executable(
 		wlroots,
 	],
 	link_with: [lib_sway_common, lib_sway_client],
+	install_rpath : rpathdir,
 	install: true
 )

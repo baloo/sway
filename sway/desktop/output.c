@@ -11,11 +11,13 @@
 #include <wlr/types/wlr_output_damage.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_surface.h>
 #include <wlr/util/region.h>
-#include "log.h"
 #include "config.h"
+#include "log.h"
 #include "sway/config.h"
+#include "sway/desktop/transaction.h"
 #include "sway/input/input-manager.h"
 #include "sway/input/seat.h"
 #include "sway/layers.h"
@@ -23,14 +25,27 @@
 #include "sway/server.h"
 #include "sway/tree/arrange.h"
 #include "sway/tree/container.h"
-#include "sway/tree/layout.h"
+#include "sway/tree/root.h"
 #include "sway/tree/view.h"
 #include "sway/tree/workspace.h"
 
-struct sway_container *output_by_name(const char *name) {
-	for (int i = 0; i < root_container.children->length; ++i) {
-		struct sway_container *output = root_container.children->items[i];
-		if (strcasecmp(output->name, name) == 0) {
+struct sway_output *output_by_name(const char *name) {
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		if (strcasecmp(output->wlr_output->name, name) == 0) {
+			return output;
+		}
+	}
+	return NULL;
+}
+
+struct sway_output *output_by_identifier(const char *identifier) {
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		char output_identifier[128];
+		snprintf(output_identifier, sizeof(output_identifier), "%s %s %s", output->wlr_output->make,
+			output->wlr_output->model, output->wlr_output->serial);
+		if (strcasecmp(output_identifier, identifier) == 0) {
 			return output;
 		}
 	}
@@ -79,7 +94,8 @@ static bool get_surface_box(struct surface_iterator_data *data,
 	int sw = surface->current.width;
 	int sh = surface->current.height;
 
-	double _sx = sx, _sy = sy;
+	double _sx = sx + surface->sx;
+	double _sy = sy + surface->sy;
 	rotate_child_position(&_sx, &_sy, sw, sh, data->width, data->height,
 		data->rotation);
 
@@ -97,8 +113,8 @@ static bool get_surface_box(struct surface_iterator_data *data,
 	wlr_box_rotated_bounds(&box, data->rotation, &rotated_box);
 
 	struct wlr_box output_box = {
-		.width = output->swayc->current.swayc_width,
-		.height = output->swayc->current.swayc_height,
+		.width = output->width,
+		.height = output->height,
 	};
 
 	struct wlr_box intersection;
@@ -144,15 +160,16 @@ void output_view_for_each_surface(struct sway_output *output,
 		.user_iterator = iterator,
 		.user_data = user_data,
 		.output = output,
-		.ox = view->swayc->current.view_x - output->swayc->current.swayc_x,
-		.oy = view->swayc->current.view_y - output->swayc->current.swayc_y,
-		.width = view->swayc->current.view_width,
-		.height = view->swayc->current.view_height,
+		.ox = view->container->current.content_x - output->wlr_output->lx
+			- view->geometry.x,
+		.oy = view->container->current.content_y - output->wlr_output->ly
+			- view->geometry.y,
+		.width = view->container->current.content_width,
+		.height = view->container->current.content_height,
 		.rotation = 0, // TODO
 	};
 
-	view_for_each_surface(view,
-		output_for_each_surface_iterator, &data);
+	view_for_each_surface(view, output_for_each_surface_iterator, &data);
 }
 
 void output_view_for_each_popup(struct sway_output *output,
@@ -162,10 +179,12 @@ void output_view_for_each_popup(struct sway_output *output,
 		.user_iterator = iterator,
 		.user_data = user_data,
 		.output = output,
-		.ox = view->swayc->current.view_x - output->swayc->current.swayc_x,
-		.oy = view->swayc->current.view_y - output->swayc->current.swayc_y,
-		.width = view->swayc->current.view_width,
-		.height = view->swayc->current.view_height,
+		.ox = view->container->current.content_x - output->wlr_output->lx
+			- view->geometry.x,
+		.oy = view->container->current.content_y - output->wlr_output->ly
+			- view->geometry.y,
+		.width = view->container->current.content_width,
+		.height = view->container->current.content_height,
 		.rotation = 0, // TODO
 	};
 
@@ -177,15 +196,15 @@ void output_layer_for_each_surface(struct sway_output *output,
 		void *user_data) {
 	struct sway_layer_surface *layer_surface;
 	wl_list_for_each(layer_surface, layer_surfaces, link) {
-		struct wlr_layer_surface *wlr_layer_surface =
+		struct wlr_layer_surface_v1 *wlr_layer_surface_v1 =
 			layer_surface->layer_surface;
-		output_surface_for_each_surface(output, wlr_layer_surface->surface,
+		output_surface_for_each_surface(output, wlr_layer_surface_v1->surface,
 			layer_surface->geo.x, layer_surface->geo.y, iterator,
 			user_data);
 	}
 }
 
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
 void output_unmanaged_for_each_surface(struct sway_output *output,
 		struct wl_list *unmanaged, sway_surface_iterator_func_t iterator,
 		void *user_data) {
@@ -193,8 +212,8 @@ void output_unmanaged_for_each_surface(struct sway_output *output,
 	wl_list_for_each(unmanaged_surface, unmanaged, link) {
 		struct wlr_xwayland_surface *xsurface =
 			unmanaged_surface->wlr_xwayland_surface;
-		double ox = unmanaged_surface->lx - output->swayc->current.swayc_x;
-		double oy = unmanaged_surface->ly - output->swayc->current.swayc_y;
+		double ox = unmanaged_surface->lx - output->wlr_output->lx;
+		double oy = unmanaged_surface->ly - output->wlr_output->ly;
 
 		output_surface_for_each_surface(output, xsurface->surface, ox, oy,
 			iterator, user_data);
@@ -207,8 +226,8 @@ void output_drag_icons_for_each_surface(struct sway_output *output,
 		void *user_data) {
 	struct sway_drag_icon *drag_icon;
 	wl_list_for_each(drag_icon, drag_icons, link) {
-		double ox = drag_icon->x - output->swayc->x;
-		double oy = drag_icon->y - output->swayc->y;
+		double ox = drag_icon->x - output->wlr_output->lx;
+		double oy = drag_icon->y - output->wlr_output->ly;
 
 		if (drag_icon->wlr_drag_icon->mapped) {
 			output_surface_for_each_surface(output,
@@ -218,41 +237,108 @@ void output_drag_icons_for_each_surface(struct sway_output *output,
 	}
 }
 
-static void scale_box(struct wlr_box *box, float scale) {
-	box->x *= scale;
-	box->y *= scale;
-	box->width *= scale;
-	box->height *= scale;
+static void for_each_surface_container_iterator(struct sway_container *con,
+		void *_data) {
+	if (!con->view || !view_is_visible(con->view)) {
+		return;
+	}
+
+	struct surface_iterator_data *data = _data;
+	output_view_for_each_surface(data->output, con->view,
+		data->user_iterator, data->user_data);
 }
 
-struct sway_container *output_get_active_workspace(struct sway_output *output) {
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	struct sway_container *focus =
-		seat_get_focus_inactive(seat, output->swayc);
+static void output_for_each_surface(struct sway_output *output,
+		sway_surface_iterator_func_t iterator, void *user_data) {
+	if (output_has_opaque_overlay_layer_surface(output)) {
+		goto overlay;
+	}
+
+	struct surface_iterator_data data = {
+		.user_iterator = iterator,
+		.user_data = user_data,
+		.output = output,
+	};
+
+	struct sway_workspace *workspace = output_get_active_workspace(output);
+	if (workspace->current.fullscreen) {
+		for_each_surface_container_iterator(
+			workspace->current.fullscreen, &data);
+		container_for_each_child(workspace->current.fullscreen,
+			for_each_surface_container_iterator, &data);
+		for (int i = 0; i < workspace->current.floating->length; ++i) {
+			struct sway_container *floater =
+				workspace->current.floating->items[i];
+			if (container_is_transient_for(floater,
+					workspace->current.fullscreen)) {
+				for_each_surface_container_iterator(floater, &data);
+			}
+		}
+#if HAVE_XWAYLAND
+		output_unmanaged_for_each_surface(output, &root->xwayland_unmanaged,
+			iterator, user_data);
+#endif
+	} else {
+		output_layer_for_each_surface(output,
+			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND],
+			iterator, user_data);
+		output_layer_for_each_surface(output,
+			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM],
+			iterator, user_data);
+
+		workspace_for_each_container(workspace,
+			for_each_surface_container_iterator, &data);
+
+#if HAVE_XWAYLAND
+		output_unmanaged_for_each_surface(output, &root->xwayland_unmanaged,
+			iterator, user_data);
+#endif
+		output_layer_for_each_surface(output,
+			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_TOP],
+			iterator, user_data);
+	}
+
+overlay:
+	output_layer_for_each_surface(output,
+		&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY],
+		iterator, user_data);
+	output_drag_icons_for_each_surface(output, &root->drag_icons,
+		iterator, user_data);
+}
+
+static int scale_length(int length, int offset, float scale) {
+	return round((offset + length) * scale) - round(offset * scale);
+}
+
+static void scale_box(struct wlr_box *box, float scale) {
+	box->width = scale_length(box->width, box->x, scale);
+	box->height = scale_length(box->height, box->y, scale);
+	box->x = round(box->x * scale);
+	box->y = round(box->y * scale);
+}
+
+struct sway_workspace *output_get_active_workspace(struct sway_output *output) {
+	struct sway_seat *seat = input_manager_current_seat();
+	struct sway_node *focus = seat_get_active_tiling_child(seat, &output->node);
 	if (!focus) {
-		// We've never been to this output before
-		focus = output->swayc->current.children->items[0];
+		return output->workspaces->items[0];
 	}
-	struct sway_container *workspace = focus;
-	if (workspace->type != C_WORKSPACE) {
-		workspace = container_parent(workspace, C_WORKSPACE);
-	}
-	return workspace;
+	return focus->sway_workspace;
 }
 
 bool output_has_opaque_overlay_layer_surface(struct sway_output *output) {
-	struct wlr_layer_surface *wlr_layer_surface;
-	wl_list_for_each(wlr_layer_surface, &server.layer_shell->surfaces, link) {
-		if (wlr_layer_surface->output != output->wlr_output ||
-				wlr_layer_surface->layer != ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
+	struct wlr_layer_surface_v1 *wlr_layer_surface_v1;
+	wl_list_for_each(wlr_layer_surface_v1, &server.layer_shell->surfaces, link) {
+		if (wlr_layer_surface_v1->output != output->wlr_output ||
+				wlr_layer_surface_v1->layer != ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
 			continue;
 		}
-		struct wlr_surface *wlr_surface = wlr_layer_surface->surface;
+		struct wlr_surface *wlr_surface = wlr_layer_surface_v1->surface;
 		struct sway_layer_surface *sway_layer_surface =
-			layer_from_wlr_layer_surface(wlr_layer_surface);
+			layer_from_wlr_layer_surface_v1(wlr_layer_surface_v1);
 		pixman_box32_t output_box = {
-			.x2 = output->swayc->current.swayc_width,
-			.y2 = output->swayc->current.swayc_height,
+			.x2 = output->width,
+			.y2 = output->height,
 		};
 		pixman_region32_t surface_opaque_box;
 		pixman_region32_init(&surface_opaque_box);
@@ -271,103 +357,13 @@ bool output_has_opaque_overlay_layer_surface(struct sway_output *output) {
 
 static void send_frame_done_iterator(struct sway_output *output,
 		struct wlr_surface *surface, struct wlr_box *box, float rotation,
-		void *_data) {
-	struct timespec *when = _data;
+		void *data) {
+	struct timespec *when = data;
 	wlr_surface_send_frame_done(surface, when);
 }
 
-static void send_frame_done_layer(struct sway_output *output,
-		struct wl_list *layer_surfaces, struct timespec *when) {
-	output_layer_for_each_surface(output, layer_surfaces,
-		send_frame_done_iterator, when);
-}
-
-#ifdef HAVE_XWAYLAND
-static void send_frame_done_unmanaged(struct sway_output *output,
-		struct wl_list *unmanaged, struct timespec *when) {
-	output_unmanaged_for_each_surface(output, unmanaged,
-		send_frame_done_iterator, when);
-}
-#endif
-
-static void send_frame_done_drag_icons(struct sway_output *output,
-		struct wl_list *drag_icons, struct timespec *when) {
-	output_drag_icons_for_each_surface(output, drag_icons,
-		send_frame_done_iterator, when);
-}
-
-struct send_frame_done_data {
-	struct sway_output *output;
-	struct timespec *when;
-};
-
-static void send_frame_done_container_iterator(struct sway_container *con,
-		void *_data) {
-	struct send_frame_done_data *data = _data;
-	if (!sway_assert(con->type == C_VIEW, "expected a view")) {
-		return;
-	}
-
-	if (!view_is_visible(con->sway_view)) {
-		return;
-	}
-
-	output_view_for_each_surface(data->output, con->sway_view,
-		send_frame_done_iterator, data->when);
-}
-
-static void send_frame_done_container(struct sway_output *output,
-		struct sway_container *con, struct timespec *when) {
-	struct send_frame_done_data data = {
-		.output = output,
-		.when = when,
-	};
-	container_descendants(con, C_VIEW,
-		send_frame_done_container_iterator, &data);
-}
-
 static void send_frame_done(struct sway_output *output, struct timespec *when) {
-	if (output_has_opaque_overlay_layer_surface(output)) {
-		goto send_frame_overlay;
-	}
-
-	struct sway_container *workspace = output_get_active_workspace(output);
-	if (workspace->current.ws_fullscreen) {
-		if (workspace->current.ws_fullscreen->type == C_VIEW) {
-			output_view_for_each_surface(output,
-				workspace->current.ws_fullscreen->sway_view,
-				send_frame_done_iterator, when);
-		} else {
-			send_frame_done_container(output, workspace->current.ws_fullscreen,
-				when);
-		}
-#ifdef HAVE_XWAYLAND
-		send_frame_done_unmanaged(output,
-			&root_container.sway_root->xwayland_unmanaged, when);
-#endif
-	} else {
-		send_frame_done_layer(output,
-			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND], when);
-		send_frame_done_layer(output,
-			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM], when);
-
-		send_frame_done_container(output, workspace, when);
-		send_frame_done_container(output, workspace->sway_workspace->floating,
-			when);
-
-#ifdef HAVE_XWAYLAND
-		send_frame_done_unmanaged(output,
-			&root_container.sway_root->xwayland_unmanaged, when);
-#endif
-		send_frame_done_layer(output,
-			&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], when);
-	}
-
-send_frame_overlay:
-	send_frame_done_layer(output,
-		&output->layers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], when);
-	send_frame_done_drag_icons(output, &root_container.sway_root->drag_icons,
-		when);
+	output_for_each_surface(output, send_frame_done_iterator, when);
 }
 
 static void damage_handle_frame(struct wl_listener *listener, void *data) {
@@ -399,7 +395,11 @@ static void damage_handle_frame(struct wl_listener *listener, void *data) {
 }
 
 void output_damage_whole(struct sway_output *output) {
-	wlr_output_damage_add_whole(output->damage);
+	// The output can exist with no wlr_output if it's just been disconnected
+	// and the transaction to evacuate it has't completed yet.
+	if (output && output->wlr_output) {
+		wlr_output_damage_add_whole(output->damage);
+	}
 }
 
 static void damage_surface_iterator(struct sway_output *output,
@@ -415,16 +415,10 @@ static void damage_surface_iterator(struct sway_output *output,
 	int center_y = box.y + box.height/2;
 
 	if (pixman_region32_not_empty(&surface->buffer_damage)) {
-		enum wl_output_transform transform =
-			wlr_output_transform_invert(surface->current.transform);
-
 		pixman_region32_t damage;
 		pixman_region32_init(&damage);
-		pixman_region32_copy(&damage, &surface->buffer_damage);
-		wlr_region_transform(&damage, &damage, transform,
-			surface->current.buffer_width, surface->current.buffer_height);
-		wlr_region_scale(&damage, &damage,
-			output->wlr_output->scale / (float)surface->current.scale);
+		wlr_surface_get_effective_damage(surface, &damage);
+		wlr_region_scale(&damage, &damage, output->wlr_output->scale);
 		if (ceil(output->wlr_output->scale) > surface->current.scale) {
 			// When scaling up a surface, it'll become blurry so we need to
 			// expand the damage region
@@ -454,14 +448,9 @@ void output_damage_surface(struct sway_output *output, double ox, double oy,
 
 static void output_damage_view(struct sway_output *output,
 		struct sway_view *view, bool whole) {
-	if (!sway_assert(view->swayc != NULL, "expected a view in the tree")) {
-		return;
-	}
-
 	if (!view_is_visible(view)) {
 		return;
 	}
-
 	output_view_for_each_surface(output, view, damage_surface_iterator, &whole);
 }
 
@@ -474,31 +463,20 @@ void output_damage_from_view(struct sway_output *output,
 void output_damage_box(struct sway_output *output, struct wlr_box *_box) {
 	struct wlr_box box;
 	memcpy(&box, _box, sizeof(struct wlr_box));
-	box.x -= output->swayc->current.swayc_x;
-	box.y -= output->swayc->current.swayc_y;
+	box.x -= output->wlr_output->lx;
+	box.y -= output->wlr_output->ly;
 	scale_box(&box, output->wlr_output->scale);
 	wlr_output_damage_add_box(output->damage, &box);
-}
-
-static void output_damage_whole_container_iterator(struct sway_container *con,
-		void *data) {
-	struct sway_output *output = data;
-
-	if (!sway_assert(con->type == C_VIEW, "expected a view")) {
-		return;
-	}
-
-	output_damage_view(output, con->sway_view, true);
 }
 
 void output_damage_whole_container(struct sway_output *output,
 		struct sway_container *con) {
 	// Pad the box by 1px, because the width is a double and might be a fraction
 	struct wlr_box box = {
-		.x = con->current.swayc_x - output->wlr_output->lx - 1,
-		.y = con->current.swayc_y - output->wlr_output->ly - 1,
-		.width = con->current.swayc_width + 2,
-		.height = con->current.swayc_height + 2,
+		.x = con->current.x - output->wlr_output->lx - 1,
+		.y = con->current.y - output->wlr_output->ly - 1,
+		.width = con->current.width + 2,
+		.height = con->current.height + 2,
 	};
 	scale_box(&box, output->wlr_output->scale);
 	wlr_output_damage_add_box(output->damage, &box);
@@ -507,45 +485,70 @@ void output_damage_whole_container(struct sway_output *output,
 static void damage_handle_destroy(struct wl_listener *listener, void *data) {
 	struct sway_output *output =
 		wl_container_of(listener, output, damage_destroy);
-	container_destroy(output->swayc);
+	output_disable(output);
+	transaction_commit_dirty();
 }
 
 static void handle_destroy(struct wl_listener *listener, void *data) {
 	struct sway_output *output = wl_container_of(listener, output, destroy);
 	wl_signal_emit(&output->events.destroy, output);
 
-	if (output->swayc) {
-		container_destroy(output->swayc);
+	if (output->enabled) {
+		output_disable(output);
 	}
+	output_begin_destroy(output);
 
-	wl_list_remove(&output->link);
-	wl_list_remove(&output->destroy.link);
-	output->wlr_output->data = NULL;
-	free(output);
-
-	arrange_windows(&root_container);
+	transaction_commit_dirty();
 }
 
 static void handle_mode(struct wl_listener *listener, void *data) {
 	struct sway_output *output = wl_container_of(listener, output, mode);
 	arrange_layers(output);
-	arrange_windows(output->swayc);
+	arrange_output(output);
 	transaction_commit_dirty();
 }
 
 static void handle_transform(struct wl_listener *listener, void *data) {
 	struct sway_output *output = wl_container_of(listener, output, transform);
 	arrange_layers(output);
-	arrange_windows(output->swayc);
+	arrange_output(output);
 	transaction_commit_dirty();
+}
+
+static void update_textures(struct sway_container *con, void *data) {
+	container_update_title_textures(con);
+	container_update_marks_textures(con);
 }
 
 static void handle_scale(struct wl_listener *listener, void *data) {
 	struct sway_output *output = wl_container_of(listener, output, scale);
 	arrange_layers(output);
-	container_update_textures_recursive(output->swayc);
-	arrange_windows(output->swayc);
+	output_for_each_container(output, update_textures, NULL);
+	arrange_output(output);
 	transaction_commit_dirty();
+}
+
+static void send_presented_iterator(struct sway_output *output,
+		struct wlr_surface *surface, struct wlr_box *box, float rotation,
+		void *data) {
+	struct wlr_presentation_event *event = data;
+	wlr_presentation_send_surface_presented(server.presentation,
+		surface, event);
+}
+
+static void handle_present(struct wl_listener *listener, void *data) {
+	struct sway_output *output = wl_container_of(listener, output, present);
+	struct wlr_output_event_present *output_event = data;
+
+	struct wlr_presentation_event event = {
+		.output = output->wlr_output,
+		.tv_sec = (uint64_t)output_event->when->tv_sec,
+		.tv_nsec = (uint32_t)output_event->when->tv_nsec,
+		.refresh = (uint32_t)output_event->refresh,
+		.seq = (uint64_t)output_event->seq,
+		.flags = output_event->flags,
+	};
+	output_for_each_surface(output, send_presented_iterator, &event);
 }
 
 void handle_new_output(struct wl_listener *listener, void *data) {
@@ -553,63 +556,28 @@ void handle_new_output(struct wl_listener *listener, void *data) {
 	struct wlr_output *wlr_output = data;
 	wlr_log(WLR_DEBUG, "New output %p: %s", wlr_output, wlr_output->name);
 
-	struct sway_output *output = calloc(1, sizeof(struct sway_output));
+	struct sway_output *output = output_create(wlr_output);
 	if (!output) {
 		return;
 	}
-	output->wlr_output = wlr_output;
-	wlr_output->data = output;
 	output->server = server;
 	output->damage = wlr_output_damage_create(wlr_output);
-
-	wl_signal_add(&wlr_output->events.destroy, &output->destroy);
 	output->destroy.notify = handle_destroy;
 
-	wl_list_insert(&root_container.sway_root->outputs, &output->link);
+	struct output_config *oc = output_find_config(output);
 
-	if (!wl_list_empty(&wlr_output->modes)) {
-		struct wlr_output_mode *mode =
-			wl_container_of(wlr_output->modes.prev, mode, link);
-		wlr_output_set_mode(wlr_output, mode);
+	if (!oc || oc->enabled) {
+		output_enable(output, oc);
 	}
 
-	output_enable(output);
+	transaction_commit_dirty();
 }
 
-void output_enable(struct sway_output *output) {
-	struct wlr_output *wlr_output = output->wlr_output;
-
-	if (!sway_assert(output->swayc == NULL, "output is already enabled")) {
-		return;
-	}
-
-	output->swayc = output_create(output);
-	if (!output->swayc) {
-		// Output is disabled
-		return;
-	}
-
-	size_t len = sizeof(output->layers) / sizeof(output->layers[0]);
-	for (size_t i = 0; i < len; ++i) {
-		wl_list_init(&output->layers[i]);
-	}
-	wl_signal_init(&output->events.destroy);
-
-	input_manager_configure_xcursor(input_manager);
-
-	wl_signal_add(&wlr_output->events.mode, &output->mode);
+void output_add_listeners(struct sway_output *output) {
 	output->mode.notify = handle_mode;
-	wl_signal_add(&wlr_output->events.transform, &output->transform);
 	output->transform.notify = handle_transform;
-	wl_signal_add(&wlr_output->events.scale, &output->scale);
 	output->scale.notify = handle_scale;
-
-	wl_signal_add(&output->damage->events.frame, &output->damage_frame);
+	output->present.notify = handle_present;
 	output->damage_frame.notify = damage_handle_frame;
-	wl_signal_add(&output->damage->events.destroy, &output->damage_destroy);
 	output->damage_destroy.notify = damage_handle_destroy;
-
-	arrange_layers(output);
-	arrange_windows(&root_container);
-	transaction_commit_dirty();
 }

@@ -1,18 +1,19 @@
 #ifndef _SWAY_ARRANGE_H
 #define _SWAY_ARRANGE_H
-#include "sway/desktop/transaction.h"
 
+struct sway_output;
+struct sway_workspace;
 struct sway_container;
+struct sway_node;
 
-// Remove gaps around container
-void remove_gaps(struct sway_container *c);
+void arrange_container(struct sway_container *container);
 
-// Add gaps around container
-void add_gaps(struct sway_container *c);
+void arrange_workspace(struct sway_workspace *workspace);
 
-/**
- * Arrange layout for all the children of the given container.
- */
-void arrange_windows(struct sway_container *container);
+void arrange_output(struct sway_output *output);
+
+void arrange_root(void);
+
+void arrange_node(struct sway_node *node);
 
 #endif

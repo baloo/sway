@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wlr/types/wlr_output_layout.h>
+#include "sway/desktop/transaction.h"
 #include "sway/input/seat.h"
 #include "sway/output.h"
 #include "sway/tree/arrange.h"
@@ -13,70 +14,67 @@
 #include "log.h"
 #include "util.h"
 
-struct sway_container root_container;
+struct sway_root *root;
 
 static void output_layout_handle_change(struct wl_listener *listener,
 		void *data) {
-	arrange_windows(&root_container);
+	arrange_root();
 	transaction_commit_dirty();
 }
 
-void root_create(void) {
-	root_container.id = 0; // normally assigned in new_swayc()
-	root_container.type = C_ROOT;
-	root_container.layout = L_NONE;
-	root_container.name = strdup("root");
-	root_container.instructions = create_list();
-	root_container.children = create_list();
-	root_container.current.children = create_list();
-	wl_signal_init(&root_container.events.destroy);
-
-	root_container.sway_root = calloc(1, sizeof(*root_container.sway_root));
-	root_container.sway_root->output_layout = wlr_output_layout_create();
-	wl_list_init(&root_container.sway_root->outputs);
-#ifdef HAVE_XWAYLAND
-	wl_list_init(&root_container.sway_root->xwayland_unmanaged);
+struct sway_root *root_create(void) {
+	struct sway_root *root = calloc(1, sizeof(struct sway_root));
+	if (!root) {
+		wlr_log(WLR_ERROR, "Unable to allocate sway_root");
+		return NULL;
+	}
+	node_init(&root->node, N_ROOT, root);
+	root->output_layout = wlr_output_layout_create();
+	wl_list_init(&root->all_outputs);
+#if HAVE_XWAYLAND
+	wl_list_init(&root->xwayland_unmanaged);
 #endif
-	wl_list_init(&root_container.sway_root->drag_icons);
-	wl_signal_init(&root_container.sway_root->events.new_container);
-	root_container.sway_root->scratchpad = create_list();
+	wl_list_init(&root->drag_icons);
+	wl_signal_init(&root->events.new_node);
+	root->outputs = create_list();
+	root->scratchpad = create_list();
+	root->saved_workspaces = create_list();
 
-	root_container.sway_root->output_layout_change.notify =
-		output_layout_handle_change;
-	wl_signal_add(&root_container.sway_root->output_layout->events.change,
-		&root_container.sway_root->output_layout_change);
+	root->output_layout_change.notify = output_layout_handle_change;
+	wl_signal_add(&root->output_layout->events.change,
+		&root->output_layout_change);
+	return root;
 }
 
-void root_destroy(void) {
-	// sway_root
-	wl_list_remove(&root_container.sway_root->output_layout_change.link);
-	list_free(root_container.sway_root->scratchpad);
-	wlr_output_layout_destroy(root_container.sway_root->output_layout);
-	free(root_container.sway_root);
-
-	// root_container
-	list_free(root_container.instructions);
-	list_free(root_container.children);
-	list_free(root_container.current.children);
-	free(root_container.name);
-
-	memset(&root_container, 0, sizeof(root_container));
+void root_destroy(struct sway_root *root) {
+	wl_list_remove(&root->output_layout_change.link);
+	list_free(root->scratchpad);
+	list_free(root->saved_workspaces);
+	list_free(root->outputs);
+	wlr_output_layout_destroy(root->output_layout);
+	free(root);
 }
 
 void root_scratchpad_add_container(struct sway_container *con) {
 	if (!sway_assert(!con->scratchpad, "Container is already in scratchpad")) {
 		return;
 	}
-	con->scratchpad = true;
-	list_add(root_container.sway_root->scratchpad, con);
 
 	struct sway_container *parent = con->parent;
+	struct sway_workspace *workspace = con->workspace;
 	container_set_floating(con, true);
-	container_remove_child(con);
-	arrange_windows(parent);
+	container_detach(con);
+	con->scratchpad = true;
+	list_add(root->scratchpad, con);
 
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	seat_set_focus(seat, seat_get_focus_inactive(seat, parent));
+	struct sway_seat *seat = input_manager_current_seat();
+	if (parent) {
+		arrange_container(parent);
+		seat_set_focus(seat, seat_get_focus_inactive(seat, &parent->node));
+	} else {
+		arrange_workspace(workspace);
+		seat_set_focus(seat, seat_get_focus_inactive(seat, &workspace->node));
+	}
 }
 
 void root_scratchpad_remove_container(struct sway_container *con) {
@@ -84,39 +82,34 @@ void root_scratchpad_remove_container(struct sway_container *con) {
 		return;
 	}
 	con->scratchpad = false;
-	for (int i = 0; i < root_container.sway_root->scratchpad->length; ++i) {
-		if (root_container.sway_root->scratchpad->items[i] == con) {
-			list_del(root_container.sway_root->scratchpad, i);
-			break;
-		}
+	int index = list_find(root->scratchpad, con);
+	if (index != -1) {
+		list_del(root->scratchpad, index);
 	}
 }
 
 void root_scratchpad_show(struct sway_container *con) {
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	struct sway_container *ws = seat_get_focus(seat);
-	if (ws->type != C_WORKSPACE) {
-		ws = container_parent(ws, C_WORKSPACE);
-	}
+	struct sway_seat *seat = input_manager_current_seat();
+	struct sway_workspace *ws = seat_get_focused_workspace(seat);
 
     // If the current con or any of its parents are in fullscreen mode, we
     // first need to disable it before showing the scratchpad con.
-	if (ws->sway_workspace->fullscreen) {
-		container_set_fullscreen(ws->sway_workspace->fullscreen, false);
+	if (ws->fullscreen) {
+		container_set_fullscreen(ws->fullscreen, false);
 	}
 
 	// Show the container
-	if (con->parent) {
-		container_remove_child(con);
+	if (con->workspace) {
+		container_detach(con);
 	}
-	container_add_child(ws->sway_workspace->floating, con);
+	workspace_add_floating(ws, con);
 
 	// Make sure the container's center point overlaps this workspace
 	double center_lx = con->x + con->width / 2;
 	double center_ly = con->y + con->height / 2;
 
 	struct wlr_box workspace_box;
-	container_get_box(ws, &workspace_box);
+	workspace_get_box(ws, &workspace_box);
 	if (!wlr_box_contains_point(&workspace_box, center_lx, center_ly)) {
 		// Maybe resize it
 		if (con->width > ws->width || con->height > ws->height) {
@@ -129,23 +122,21 @@ void root_scratchpad_show(struct sway_container *con) {
 		container_floating_move_to(con, new_lx, new_ly);
 	}
 
-	arrange_windows(ws);
-	seat_set_focus(seat, seat_get_focus_inactive(seat, con));
-
-	container_set_dirty(con->parent);
+	arrange_workspace(ws);
+	seat_set_focus(seat, seat_get_focus_inactive(seat, &con->node));
 }
 
 void root_scratchpad_hide(struct sway_container *con) {
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	struct sway_container *focus = seat_get_focus(seat);
-	struct sway_container *ws = container_parent(con, C_WORKSPACE);
+	struct sway_seat *seat = input_manager_current_seat();
+	struct sway_node *focus = seat_get_focus(seat);
+	struct sway_workspace *ws = con->workspace;
 
-	container_remove_child(con);
-	arrange_windows(ws);
-	if (con == focus) {
-		seat_set_focus(seat, seat_get_focus_inactive(seat, ws));
+	container_detach(con);
+	arrange_workspace(ws);
+	if (&con->node == focus) {
+		seat_set_focus(seat, seat_get_focus_inactive(seat, &ws->node));
 	}
-	list_move_to_end(root_container.sway_root->scratchpad, con);
+	list_move_to_end(root->scratchpad, con);
 }
 
 struct pid_workspace {
@@ -153,7 +144,7 @@ struct pid_workspace {
 	char *workspace;
 	struct timespec time_added;
 
-	struct sway_container *output;
+	struct sway_output *output;
 	struct wl_listener output_destroy;
 
 	struct wl_list link;
@@ -161,13 +152,13 @@ struct pid_workspace {
 
 static struct wl_list pid_workspaces;
 
-struct sway_container *root_workspace_for_pid(pid_t pid) {
+struct sway_workspace *root_workspace_for_pid(pid_t pid) {
 	if (!pid_workspaces.prev && !pid_workspaces.next) {
 		wl_list_init(&pid_workspaces);
 		return NULL;
 	}
 
-	struct sway_container *ws = NULL;
+	struct sway_workspace *ws = NULL;
 	struct pid_workspace *pw = NULL;
 
 	wlr_log(WLR_DEBUG, "Looking up workspace for pid %d", pid);
@@ -219,17 +210,13 @@ void root_record_workspace_pid(pid_t pid) {
 		wl_list_init(&pid_workspaces);
 	}
 
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	struct sway_container *ws =
-		seat_get_focus_inactive(seat, &root_container);
-	if (ws && ws->type != C_WORKSPACE) {
-		ws = container_parent(ws, C_WORKSPACE);
-	}
+	struct sway_seat *seat = input_manager_current_seat();
+	struct sway_workspace *ws = seat_get_focused_workspace(seat);
 	if (!ws) {
 		wlr_log(WLR_DEBUG, "Bailing out, no workspace");
 		return;
 	}
-	struct sway_container *output = ws->parent;
+	struct sway_output *output = ws->output;
 	if (!output) {
 		wlr_log(WLR_DEBUG, "Bailing out, no output");
 		return;
@@ -256,7 +243,104 @@ void root_record_workspace_pid(pid_t pid) {
 	pw->pid = pid;
 	memcpy(&pw->time_added, &now, sizeof(struct timespec));
 	pw->output_destroy.notify = pw_handle_output_destroy;
-	wl_signal_add(&output->sway_output->wlr_output->events.destroy,
-			&pw->output_destroy);
+	wl_signal_add(&output->wlr_output->events.destroy, &pw->output_destroy);
 	wl_list_insert(&pid_workspaces, &pw->link);
+}
+
+void root_for_each_workspace(void (*f)(struct sway_workspace *ws, void *data),
+		void *data) {
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		output_for_each_workspace(output, f, data);
+	}
+}
+
+void root_for_each_container(void (*f)(struct sway_container *con, void *data),
+		void *data) {
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		output_for_each_container(output, f, data);
+	}
+
+	// Scratchpad
+	for (int i = 0; i < root->scratchpad->length; ++i) {
+		struct sway_container *container = root->scratchpad->items[i];
+		// If the container has a workspace then it's visible on a workspace
+		// and will have been iterated in the previous for loop. So we only
+		// iterate the hidden scratchpad containers here.
+		if (!container->workspace) {
+			f(container, data);
+			container_for_each_child(container, f, data);
+		}
+	}
+
+	// Saved workspaces
+	for (int i = 0; i < root->saved_workspaces->length; ++i) {
+		struct sway_workspace *ws = root->saved_workspaces->items[i];
+		workspace_for_each_container(ws, f, data);
+	}
+}
+
+struct sway_output *root_find_output(
+		bool (*test)(struct sway_output *output, void *data), void *data) {
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		if (test(output, data)) {
+			return output;
+		}
+	}
+	return NULL;
+}
+
+struct sway_workspace *root_find_workspace(
+		bool (*test)(struct sway_workspace *ws, void *data), void *data) {
+	struct sway_workspace *result = NULL;
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		if ((result = output_find_workspace(output, test, data))) {
+			return result;
+		}
+	}
+	return NULL;
+}
+
+struct sway_container *root_find_container(
+		bool (*test)(struct sway_container *con, void *data), void *data) {
+	struct sway_container *result = NULL;
+	for (int i = 0; i < root->outputs->length; ++i) {
+		struct sway_output *output = root->outputs->items[i];
+		if ((result = output_find_container(output, test, data))) {
+			return result;
+		}
+	}
+
+	// Scratchpad
+	for (int i = 0; i < root->scratchpad->length; ++i) {
+		struct sway_container *container = root->scratchpad->items[i];
+		if (!container->workspace) {
+			if (test(container, data)) {
+				return container;
+			}
+			if ((result = container_find_child(container, test, data))) {
+				return result;
+			}
+		}
+	}
+
+	// Saved workspaces
+	for (int i = 0; i < root->saved_workspaces->length; ++i) {
+		struct sway_workspace *ws = root->saved_workspaces->items[i];
+		if ((result = workspace_find_container(ws, test, data))) {
+			return result;
+		}
+	}
+
+	return NULL;
+}
+
+void root_get_box(struct sway_root *root, struct wlr_box *box) {
+	box->x = root->x;
+	box->y = root->y;
+	box->width = root->width;
+	box->height = root->height;
 }

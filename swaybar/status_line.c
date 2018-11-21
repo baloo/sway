@@ -1,92 +1,142 @@
 #define _POSIX_C_SOURCE 200809L
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <json-c/json.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <wlr/util/log.h>
+#include "loop.h"
+#include "swaybar/bar.h"
 #include "swaybar/config.h"
+#include "swaybar/i3bar.h"
 #include "swaybar/status_line.h"
 #include "readline.h"
 
+static void status_line_close_fds(struct status_line *status) {
+	if (status->read_fd != -1) {
+		loop_remove_fd(status->bar->eventloop, status->read_fd);
+		close(status->read_fd);
+		status->read_fd = -1;
+	}
+	if (status->write_fd != -1) {
+		close(status->write_fd);
+		status->write_fd = -1;
+	}
+}
+
 void status_error(struct status_line *status, const char *text) {
-	close(status->read_fd);
-	close(status->write_fd);
+	status_line_close_fds(status);
 	status->protocol = PROTOCOL_ERROR;
 	status->text = text;
 }
 
 bool status_handle_readable(struct status_line *status) {
-	char *line;
+	ssize_t read_bytes = 1;
 	switch (status->protocol) {
-	case PROTOCOL_ERROR:
-		return false;
-	case PROTOCOL_I3BAR:
-		if (i3bar_handle_readable(status) > 0) {
+	case PROTOCOL_UNDEF:
+		errno = 0;
+		int available_bytes;
+		if (ioctl(status->read_fd, FIONREAD, &available_bytes) == -1) {
+			wlr_log(WLR_ERROR, "Unable to read status command output size");
+			status_error(status, "[error reading from status command]");
 			return true;
 		}
-		break;
-	case PROTOCOL_TEXT:
-		line = read_line_buffer(status->read,
-				status->text_state.buffer, status->text_state.buffer_size);
-		if (!line) {
-			status_error(status, "[error reading from status command]");
-		} else {
-			status->text = line;
+
+		if ((size_t)available_bytes + 1 > status->buffer_size) {
+			// need room for leading '\0' too
+			status->buffer_size = available_bytes + 1;
+			status->buffer = realloc(status->buffer, status->buffer_size);
 		}
-		return true;
-	case PROTOCOL_UNDEF:
-		line = read_line_buffer(status->read,
-				status->text_state.buffer, status->text_state.buffer_size);
-		if (!line) {
+		if (status->buffer == NULL) {
+			wlr_log_errno(WLR_ERROR, "Unable to read status line");
 			status_error(status, "[error reading from status command]");
-			return false;
+			return true;
 		}
-		if (line[0] == '{') {
-			json_object *proto = json_tokener_parse(line);
-			if (proto) {
-				json_object *version;
-				if (json_object_object_get_ex(proto, "version", &version)
-							&& json_object_get_int(version) == 1) {
-					wlr_log(WLR_DEBUG, "Switched to i3bar protocol.");
-					status->protocol = PROTOCOL_I3BAR;
+
+		read_bytes = read(status->read_fd, status->buffer, available_bytes);
+		if (read_bytes != available_bytes) {
+			status_error(status, "[error reading from status command]");
+			return true;
+		}
+		status->buffer[available_bytes] = 0;
+
+		// the header must be sent completely the first time round
+		char *newline = strchr(status->buffer, '\n');
+		json_object *header, *version;
+		if (newline != NULL
+				&& (header = json_tokener_parse(status->buffer))
+				&& json_object_object_get_ex(header, "version", &version)
+				&& json_object_get_int(version) == 1) {
+			wlr_log(WLR_DEBUG, "Using i3bar protocol.");
+			status->protocol = PROTOCOL_I3BAR;
+
+			json_object *click_events;
+			if (json_object_object_get_ex(header, "click_events", &click_events)
+					&& json_object_get_boolean(click_events)) {
+				wlr_log(WLR_DEBUG, "Enabling click events.");
+				status->click_events = true;
+				if (write(status->write_fd, "[\n", 2) != 2) {
+					status_error(status, "[failed to write to status command]");
+					json_object_put(header);
+					return true;
 				}
-				json_object *click_events;
-				if (json_object_object_get_ex(
-							proto, "click_events", &click_events)
-						&& json_object_get_boolean(click_events)) {
-					wlr_log(WLR_DEBUG, "Enabled click events.");
-					status->i3bar_state.click_events = true;
-					const char *events_array = "[\n";
-					ssize_t len = strlen(events_array);
-					if (write(status->write_fd, events_array, len) != len) {
-						status_error(status,
-								"[failed to write to status command]");
-					}
-				}
-				json_object_put(proto);
 			}
 
-			status->protocol = PROTOCOL_I3BAR;
-			free(status->text_state.buffer);
+			json_object *signal;
+			if (json_object_object_get_ex(header, "stop_signal", &signal)) {
+				status->stop_signal = json_object_get_int(signal);
+				wlr_log(WLR_DEBUG, "Setting stop signal to %d", status->stop_signal);
+			}
+			if (json_object_object_get_ex(header, "cont_signal", &signal)) {
+				status->cont_signal = json_object_get_int(signal);
+				wlr_log(WLR_DEBUG, "Setting cont signal to %d", status->cont_signal);
+			}
+
+			json_object_put(header);
+
 			wl_list_init(&status->blocks);
-			status->i3bar_state.buffer_size = 4096;
-			status->i3bar_state.buffer =
-				malloc(status->i3bar_state.buffer_size);
-		} else {
-			status->protocol = PROTOCOL_TEXT;
-			status->text = line;
+			status->tokener = json_tokener_new();
+			status->buffer_index = strlen(newline + 1);
+			memmove(status->buffer, newline + 1, status->buffer_index + 1);
+			return i3bar_handle_readable(status);
 		}
-		return true;
+
+		wlr_log(WLR_DEBUG, "Using text protocol.");
+		status->protocol = PROTOCOL_TEXT;
+		status->text = status->buffer;
+		// intentional fall-through
+	case PROTOCOL_TEXT:
+		errno = 0;
+		while (true) {
+			if (status->buffer[read_bytes - 1] == '\n') {
+				status->buffer[read_bytes - 1] = '\0';
+			}
+			read_bytes = getline(&status->buffer,
+					&status->buffer_size, status->read);
+			if (errno == EAGAIN) {
+				clearerr(status->read);
+				return true;
+			} else if (errno) {
+				status_error(status, "[error reading from status command]");
+				return true;
+			}
+		}
+	case PROTOCOL_I3BAR:
+		return i3bar_handle_readable(status);
+	default:
+		return false;
 	}
-	return false;
 }
 
 struct status_line *status_line_init(char *cmd) {
 	struct status_line *status = calloc(1, sizeof(struct status_line));
-	status->text_state.buffer_size = 8192;
-	status->text_state.buffer = malloc(status->text_state.buffer_size);
+	status->stop_signal = SIGSTOP;
+	status->cont_signal = SIGCONT;
+
+	status->buffer_size = 8192;
+	status->buffer = malloc(status->buffer_size);
 
 	int pipe_read_fd[2];
 	int pipe_write_fd[2];
@@ -123,20 +173,19 @@ struct status_line *status_line_init(char *cmd) {
 }
 
 void status_line_free(struct status_line *status) {
-	close(status->read_fd);
-	close(status->write_fd);
+	status_line_close_fds(status);
 	kill(status->pid, SIGTERM);
-	switch (status->protocol) {
-	case PROTOCOL_I3BAR:;
+	if (status->protocol == PROTOCOL_I3BAR) {
 		struct i3bar_block *block, *tmp;
 		wl_list_for_each_safe(block, tmp, &status->blocks, link) {
-			i3bar_block_free(block);
+			wl_list_remove(&block->link);
+			i3bar_block_unref(block);
 		}
-		free(status->i3bar_state.buffer);
-		break;
-	default:
-		free(status->text_state.buffer);
-		break;
+		json_tokener_free(status->tokener);
 	}
+	free(status->read);
+	free(status->write);
+	free((char*) status->text);
+	free(status->buffer);
 	free(status);
 }

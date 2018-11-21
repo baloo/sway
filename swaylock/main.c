@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200112L
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdbool.h>
@@ -21,6 +22,7 @@
 #include "pool-buffer.h"
 #include "cairo.h"
 #include "log.h"
+#include "loop.h"
 #include "readline.h"
 #include "stringop.h"
 #include "util.h"
@@ -32,7 +34,7 @@ void sway_terminate(int exit_code) {
 	exit(exit_code);
 }
 
-static void daemonize() {
+static void daemonize(void) {
 	int fds[2];
 	if (pipe(fds) != 0) {
 		wlr_log(WLR_ERROR, "Failed to pipe");
@@ -195,11 +197,15 @@ void damage_state(struct swaylock_state *state) {
 	}
 }
 
-static void handle_wl_output_geometry(void *data, struct wl_output *output,
+static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
 		int32_t x, int32_t y, int32_t width_mm, int32_t height_mm,
 		int32_t subpixel, const char *make, const char *model,
 		int32_t transform) {
-	// Who cares
+	struct swaylock_surface *surface = data;
+	surface->subpixel = subpixel;
+	if (surface->state->run_display) {
+		damage_surface(surface);
+	}
 }
 
 static void handle_wl_output_mode(void *data, struct wl_output *output,
@@ -273,8 +279,11 @@ static void handle_global(void *data, struct wl_registry *registry,
 				&wl_shm_interface, 1);
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
 		struct wl_seat *seat = wl_registry_bind(
-				registry, name, &wl_seat_interface, 1);
-		wl_seat_add_listener(seat, &seat_listener, state);
+				registry, name, &wl_seat_interface, 3);
+		struct swaylock_seat *swaylock_seat =
+			calloc(1, sizeof(struct swaylock_seat));
+		swaylock_seat->state = state;
+		wl_seat_add_listener(seat, &seat_listener, swaylock_seat);
 	} else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
 		state->layer_shell = wl_registry_bind(
 				registry, name, &zwlr_layer_shell_v1_interface, 1);
@@ -380,7 +389,6 @@ static void load_image(char *arg, struct swaylock_state *state) {
 		return;
 	}
 	wl_list_insert(&state->images, &image->link);
-	state->args.mode = BACKGROUND_MODE_FILL;
 	wlr_log(WLR_DEBUG, "Loaded image %s for output %s",
 			image->path, image->output_name ? image->output_name : "*");
 }
@@ -629,13 +637,9 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			}
 			break;
 		case 'v':
-#if defined SWAY_GIT_VERSION && defined SWAY_GIT_BRANCH && defined SWAY_VERSION_DATE
-			fprintf(stdout, "swaylock version %s (%s, branch \"%s\")\n",
-					SWAY_GIT_VERSION, SWAY_VERSION_DATE, SWAY_GIT_BRANCH);
-#else
-			fprintf(stdout, "version unknown\n");
-#endif
-			return 1;
+			fprintf(stdout, "swaylock version " SWAY_VERSION "\n");
+			exit(EXIT_SUCCESS);
+			break;
 		case LO_BS_HL_COLOR:
 			if (state) {
 				state->args.colors.bs_highlight = parse_color(optarg);
@@ -840,10 +844,19 @@ static int load_config(char *path, struct swaylock_state *state,
 
 static struct swaylock_state state;
 
+static void display_in(int fd, short mask, void *data) {
+	if (wl_display_dispatch(state.display) == -1) {
+		state.run_display = false;
+	}
+}
+
 int main(int argc, char **argv) {
+	wlr_log_init(WLR_DEBUG, NULL);
+	initialize_pw_backend();
+
 	enum line_mode line_mode = LM_LINE;
 	state.args = (struct swaylock_args){
-		.mode = BACKGROUND_MODE_SOLID_COLOR,
+		.mode = BACKGROUND_MODE_FILL,
 		.font = strdup("sans-serif"),
 		.radius = 50,
 		.thickness = 10,
@@ -852,8 +865,6 @@ int main(int argc, char **argv) {
 	};
 	wl_list_init(&state.images);
 	set_default_colors(&state.args.colors);
-
-	wlr_log_init(WLR_DEBUG, NULL);
 
 	char *config_path = NULL;
 	int result = parse_options(argc, argv, NULL, NULL, &config_path);
@@ -898,7 +909,11 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.surfaces);
 	state.xkb.context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 	state.display = wl_display_connect(NULL);
-	assert(state.display);
+	if (!state.display) {
+		sway_abort("Unable to connect to the compositor. "
+				"If your compositor is running, check or set the "
+				"WAYLAND_DISPLAY environment variable.");
+	}
 
 	struct wl_registry *registry = wl_display_get_registry(state.display);
 	wl_registry_add_listener(registry, &registry_listener, &state);
@@ -916,6 +931,11 @@ int main(int argc, char **argv) {
 	}
 
 	zwlr_input_inhibit_manager_v1_get_inhibitor(state.input_inhibit_manager);
+	if (wl_display_roundtrip(state.display) == -1) {
+		wlr_log(WLR_ERROR, "Exiting - failed to inhibit input:"
+				" is another lockscreen already running?");
+		return 2;
+	}
 
 	if (state.zxdg_output_manager) {
 		struct swaylock_surface *surface;
@@ -941,9 +961,17 @@ int main(int argc, char **argv) {
 		daemonize();
 	}
 
+	state.eventloop = loop_create();
+	loop_add_fd(state.eventloop, wl_display_get_fd(state.display), POLL_IN,
+			display_in, NULL);
+
 	state.run_display = true;
-	while (wl_display_dispatch(state.display) != -1 && state.run_display) {
-		// This space intentionally left blank
+	while (state.run_display) {
+		errno = 0;
+		if (wl_display_flush(state.display) == -1 && errno != EAGAIN) {
+			break;
+		}
+		loop_poll(state.eventloop);
 	}
 
 	free(state.args.font);

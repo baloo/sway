@@ -2,11 +2,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <strings.h>
 #include <pcre.h>
 #include "sway/criteria.h"
 #include "sway/tree/container.h"
 #include "sway/config.h"
+#include "sway/tree/root.h"
 #include "sway/tree/view.h"
+#include "sway/tree/workspace.h"
 #include "stringop.h"
 #include "list.h"
 #include "log.h"
@@ -16,15 +19,15 @@ bool criteria_is_empty(struct criteria *criteria) {
 	return !criteria->title
 		&& !criteria->shell
 		&& !criteria->app_id
-		&& !criteria->class
-		&& !criteria->instance
 		&& !criteria->con_mark
 		&& !criteria->con_id
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
+		&& !criteria->class
 		&& !criteria->id
-#endif
+		&& !criteria->instance
 		&& !criteria->window_role
-		&& !criteria->window_type
+		&& criteria->window_type == ATOM_LAST
+#endif
 		&& !criteria->floating
 		&& !criteria->tiling
 		&& !criteria->urgent
@@ -32,22 +35,42 @@ bool criteria_is_empty(struct criteria *criteria) {
 }
 
 void criteria_destroy(struct criteria *criteria) {
+	free(criteria->raw);
+	free(criteria->cmdlist);
+	free(criteria->target);
 	pcre_free(criteria->title);
 	pcre_free(criteria->shell);
 	pcre_free(criteria->app_id);
+	pcre_free(criteria->con_mark);
+#if HAVE_XWAYLAND
 	pcre_free(criteria->class);
 	pcre_free(criteria->instance);
-	pcre_free(criteria->con_mark);
 	pcre_free(criteria->window_role);
+#endif
 	free(criteria->workspace);
-	free(criteria->cmdlist);
-	free(criteria->raw);
 	free(criteria);
 }
 
 static int regex_cmp(const char *item, const pcre *regex) {
 	return pcre_exec(regex, NULL, item, strlen(item), 0, 0, NULL, 0);
 }
+
+#if HAVE_XWAYLAND
+static bool view_has_window_type(struct sway_view *view, enum atom_name name) {
+	if (view->type != SWAY_VIEW_XWAYLAND) {
+		return false;
+	}
+	struct wlr_xwayland_surface *surface = view->wlr_xwayland_surface;
+	struct sway_xwayland *xwayland = &server.xwayland;
+	xcb_atom_t desired_atom = xwayland->atoms[name];
+	for (size_t i = 0; i < surface->window_type_len; ++i) {
+		if (surface->window_type[i] == desired_atom) {
+			return true;
+		}
+	}
+	return false;
+}
+#endif
 
 static int cmp_urgent(const void *_a, const void *_b) {
 	struct sway_view *a = *(void **)_a;
@@ -66,12 +89,12 @@ static int cmp_urgent(const void *_a, const void *_b) {
 	return 0;
 }
 
-static void find_urgent_iterator(struct sway_container *swayc, void *data) {
-	if (swayc->type != C_VIEW || !view_is_urgent(swayc->sway_view)) {
+static void find_urgent_iterator(struct sway_container *con, void *data) {
+	if (!con->view || !view_is_urgent(con->view)) {
 		return;
 	}
 	list_t *urgent_views = data;
-	list_add(urgent_views, swayc->sway_view);
+	list_add(urgent_views, con->view);
 }
 
 static bool criteria_matches_view(struct criteria *criteria,
@@ -97,6 +120,34 @@ static bool criteria_matches_view(struct criteria *criteria,
 		}
 	}
 
+	if (criteria->con_mark) {
+		bool exists = false;
+		struct sway_container *con = view->container;
+		for (int i = 0; i < con->marks->length; ++i) {
+			if (regex_cmp(con->marks->items[i], criteria->con_mark) == 0) {
+				exists = true;
+				break;
+			}
+		}
+		if (!exists) {
+			return false;
+		}
+	}
+
+	if (criteria->con_id) { // Internal ID
+		if (!view->container || view->container->node.id != criteria->con_id) {
+			return false;
+		}
+	}
+
+#if HAVE_XWAYLAND
+	if (criteria->id) { // X11 window ID
+		uint32_t x11_window_id = view_get_x11_window_id(view);
+		if (!x11_window_id || x11_window_id != criteria->id) {
+			return false;
+		}
+	}
+
 	if (criteria->class) {
 		const char *class = view_get_class(view);
 		if (!class || regex_cmp(class, criteria->class) != 0) {
@@ -111,53 +162,28 @@ static bool criteria_matches_view(struct criteria *criteria,
 		}
 	}
 
-	if (criteria->con_mark) {
-		bool exists = false;
-		for (int i = 0; i < view->marks->length; ++i) {
-			if (regex_cmp(view->marks->items[i], criteria->con_mark) == 0) {
-				exists = true;
-				break;
-			}
-		}
-		if (!exists) {
+	if (criteria->window_role) {
+		const char *role = view_get_window_role(view);
+		if (!role || regex_cmp(role, criteria->window_role) != 0) {
 			return false;
 		}
 	}
 
-	if (criteria->con_id) { // Internal ID
-		if (!view->swayc || view->swayc->id != criteria->con_id) {
-			return false;
-		}
-	}
-
-#ifdef HAVE_XWAYLAND
-	if (criteria->id) { // X11 window ID
-		uint32_t x11_window_id = view_get_x11_window_id(view);
-		if (!x11_window_id || x11_window_id != criteria->id) {
+	if (criteria->window_type != ATOM_LAST) {
+		if (!view_has_window_type(view, criteria->window_type)) {
 			return false;
 		}
 	}
 #endif
 
-	if (criteria->window_role) {
-		// TODO
-	}
-
-	if (criteria->window_type) {
-		uint32_t type = view_get_window_type(view);
-		if (!type || type != criteria->window_type) {
-			return false;
-		}
-	}
-
 	if (criteria->floating) {
-		if (!container_is_floating(view->swayc)) {
+		if (!container_is_floating(view->container)) {
 			return false;
 		}
 	}
 
 	if (criteria->tiling) {
-		if (container_is_floating(view->swayc)) {
+		if (container_is_floating(view->container)) {
 			return false;
 		}
 	}
@@ -167,8 +193,7 @@ static bool criteria_matches_view(struct criteria *criteria,
 			return false;
 		}
 		list_t *urgent_views = create_list();
-		container_for_each_descendant(&root_container,
-				find_urgent_iterator, urgent_views);
+		root_for_each_container(find_urgent_iterator, urgent_views);
 		list_stable_sort(urgent_views, cmp_urgent);
 		struct sway_view *target;
 		if (criteria->urgent == 'o') { // oldest
@@ -183,10 +208,7 @@ static bool criteria_matches_view(struct criteria *criteria,
 	}
 
 	if (criteria->workspace) {
-		if (!view->swayc) {
-			return false;
-		}
-		struct sway_container *ws = container_parent(view->swayc, C_WORKSPACE);
+		struct sway_workspace *ws = view->container->workspace;
 		if (!ws || strcmp(ws->name, criteria->workspace) != 0) {
 			return false;
 		}
@@ -215,9 +237,9 @@ struct match_data {
 static void criteria_get_views_iterator(struct sway_container *container,
 		void *data) {
 	struct match_data *match_data = data;
-	if (container->type == C_VIEW) {
-		if (criteria_matches_view(match_data->criteria, container->sway_view)) {
-			list_add(match_data->matches, container->sway_view);
+	if (container->view) {
+		if (criteria_matches_view(match_data->criteria, container->view)) {
+			list_add(match_data->matches, container->view);
 		}
 	}
 }
@@ -228,17 +250,7 @@ list_t *criteria_get_views(struct criteria *criteria) {
 		.criteria = criteria,
 		.matches = matches,
 	};
-	container_for_each_descendant(&root_container,
-		criteria_get_views_iterator, &data);
-
-	// Scratchpad items which are hidden are not in the tree.
-	for (int i = 0; i < root_container.sway_root->scratchpad->length; ++i) {
-		struct sway_container *con =
-			root_container.sway_root->scratchpad->items[i];
-		if (!con->parent) {
-			criteria_get_views_iterator(con, &data);
-		}
-	}
+	root_for_each_container(criteria_get_views_iterator, &data);
 	return matches;
 }
 
@@ -264,22 +276,49 @@ static bool generate_regex(pcre **regex, char *value) {
 	return true;
 }
 
+#if HAVE_XWAYLAND
+static enum atom_name parse_window_type(const char *type) {
+	if (strcasecmp(type, "normal") == 0) {
+		return NET_WM_WINDOW_TYPE_NORMAL;
+	} else if (strcasecmp(type, "dialog") == 0) {
+		return NET_WM_WINDOW_TYPE_DIALOG;
+	} else if (strcasecmp(type, "utility") == 0) {
+		return NET_WM_WINDOW_TYPE_UTILITY;
+	} else if (strcasecmp(type, "toolbar") == 0) {
+		return NET_WM_WINDOW_TYPE_TOOLBAR;
+	} else if (strcasecmp(type, "splash") == 0) {
+		return NET_WM_WINDOW_TYPE_SPLASH;
+	} else if (strcasecmp(type, "menu") == 0) {
+		return NET_WM_WINDOW_TYPE_MENU;
+	} else if (strcasecmp(type, "dropdown_menu") == 0) {
+		return NET_WM_WINDOW_TYPE_DROPDOWN_MENU;
+	} else if (strcasecmp(type, "popup_menu") == 0) {
+		return NET_WM_WINDOW_TYPE_POPUP_MENU;
+	} else if (strcasecmp(type, "tooltip") == 0) {
+		return NET_WM_WINDOW_TYPE_TOOLTIP;
+	} else if (strcasecmp(type, "notification") == 0) {
+		return NET_WM_WINDOW_TYPE_NOTIFICATION;
+	}
+	return ATOM_LAST; // ie. invalid
+}
+#endif
+
 enum criteria_token {
 	T_APP_ID,
-	T_CLASS,
 	T_CON_ID,
 	T_CON_MARK,
 	T_FLOATING,
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
+	T_CLASS,
 	T_ID,
-#endif
 	T_INSTANCE,
+	T_WINDOW_ROLE,
+	T_WINDOW_TYPE,
+#endif
 	T_SHELL,
 	T_TILING,
 	T_TITLE,
 	T_URGENT,
-	T_WINDOW_ROLE,
-	T_WINDOW_TYPE,
 	T_WORKSPACE,
 
 	T_INVALID,
@@ -288,30 +327,34 @@ enum criteria_token {
 static enum criteria_token token_from_name(char *name) {
 	if (strcmp(name, "app_id") == 0) {
 		return T_APP_ID;
-	} else if (strcmp(name, "class") == 0) {
-		return T_CLASS;
 	} else if (strcmp(name, "con_id") == 0) {
 		return T_CON_ID;
 	} else if (strcmp(name, "con_mark") == 0) {
 		return T_CON_MARK;
-#ifdef HAVE_XWAYLAND
+#if HAVE_XWAYLAND
+	} else if (strcmp(name, "class") == 0) {
+		return T_CLASS;
 	} else if (strcmp(name, "id") == 0) {
 		return T_ID;
-#endif
 	} else if (strcmp(name, "instance") == 0) {
 		return T_INSTANCE;
+	} else if (strcmp(name, "window_role") == 0) {
+		return T_WINDOW_ROLE;
+	} else if (strcmp(name, "window_type") == 0) {
+		return T_WINDOW_TYPE;
+#endif
 	} else if (strcmp(name, "shell") == 0) {
 		return T_SHELL;
 	} else if (strcmp(name, "title") == 0) {
 		return T_TITLE;
 	} else if (strcmp(name, "urgent") == 0) {
 		return T_URGENT;
-	} else if (strcmp(name, "window_role") == 0) {
-		return T_WINDOW_ROLE;
-	} else if (strcmp(name, "window_type") == 0) {
-		return T_WINDOW_TYPE;
 	} else if (strcmp(name, "workspace") == 0) {
 		return T_WORKSPACE;
+	} else if (strcmp(name, "tiling") == 0) {
+		return T_TILING;
+	} else if (strcmp(name, "floating") == 0) {
+		return T_FLOATING;
 	}
 	return T_INVALID;
 }
@@ -325,60 +368,57 @@ static enum criteria_token token_from_name(char *name) {
  * criteria is only executed once per view.
  */
 static char *get_focused_prop(enum criteria_token token) {
-	struct sway_seat *seat = input_manager_current_seat(input_manager);
-	struct sway_container *focus = seat_get_focus(seat);
+	struct sway_seat *seat = input_manager_current_seat();
+	struct sway_container *focus = seat_get_focused_container(seat);
 
-	if (!focus || focus->type != C_VIEW) {
+	if (!focus || !focus->view) {
 		return NULL;
 	}
-	struct sway_view *view = focus->sway_view;
+	struct sway_view *view = focus->view;
 	const char *value = NULL;
 
 	switch (token) {
 	case T_APP_ID:
 		value = view_get_app_id(view);
 		break;
+	case T_SHELL:
+		value = view_get_shell(view);
+		break;
+	case T_TITLE:
+		value = view_get_title(view);
+		break;
+	case T_WORKSPACE:
+		if (focus->workspace) {
+			value = focus->workspace->name;
+		}
+		break;
+	case T_CON_ID:
+		if (view->container == NULL) {
+			return NULL;
+		}
+		size_t id = view->container->node.id;
+		size_t id_size = snprintf(NULL, 0, "%zu", id) + 1;
+		char *id_str = malloc(id_size);
+		snprintf(id_str, id_size, "%zu", id);
+		value = id_str;
+		break;
+#if HAVE_XWAYLAND
 	case T_CLASS:
 		value = view_get_class(view);
 		break;
 	case T_INSTANCE:
 		value = view_get_instance(view);
 		break;
-	case T_SHELL:
-		value = view_get_shell(view);
-		break;
-	case T_TITLE:
-		value = view_get_class(view);
-		break;
 	case T_WINDOW_ROLE:
-		value = view_get_class(view);
+		value = view_get_window_role(view);
 		break;
-	case T_WORKSPACE:
-		{
-			struct sway_container *ws = container_parent(focus, C_WORKSPACE);
-			if (ws) {
-				value = ws->name;
-			}
-		}
-		break;
-	case T_CON_ID:
-		if (view->swayc == NULL) {
-			return NULL;
-		}
-		size_t id = view->swayc->id;
-		size_t id_size = snprintf(NULL, 0, "%zu", id) + 1;
-		char *id_str = malloc(id_size);
-		snprintf(id_str, id_size, "%zu", id);
-		value = id_str;
-		break;
-	case T_CON_MARK: // These do not support __focused__
-	case T_FLOATING:
-#ifdef HAVE_XWAYLAND
+	case T_WINDOW_TYPE: // These do not support __focused__
 	case T_ID:
 #endif
+	case T_CON_MARK:
+	case T_FLOATING:
 	case T_TILING:
 	case T_URGENT:
-	case T_WINDOW_TYPE:
 	case T_INVALID:
 		break;
 	}
@@ -425,12 +465,6 @@ static bool parse_token(struct criteria *criteria, char *name, char *value) {
 	case T_APP_ID:
 		generate_regex(&criteria->app_id, effective_value);
 		break;
-	case T_CLASS:
-		generate_regex(&criteria->class, effective_value);
-		break;
-	case T_INSTANCE:
-		generate_regex(&criteria->instance, effective_value);
-		break;
 	case T_CON_ID:
 		criteria->con_id = strtoul(effective_value, &endptr, 10);
 		if (*endptr != 0) {
@@ -440,18 +474,24 @@ static bool parse_token(struct criteria *criteria, char *name, char *value) {
 	case T_CON_MARK:
 		generate_regex(&criteria->con_mark, effective_value);
 		break;
-	case T_WINDOW_ROLE:
-		generate_regex(&criteria->window_role, effective_value);
+#if HAVE_XWAYLAND
+	case T_CLASS:
+		generate_regex(&criteria->class, effective_value);
 		break;
-	case T_WINDOW_TYPE:
-		// TODO: This is a string but will be stored as an enum or integer
-		break;
-#ifdef HAVE_XWAYLAND
 	case T_ID:
 		criteria->id = strtoul(effective_value, &endptr, 10);
 		if (*endptr != 0) {
 			error = strdup("The value for 'id' should be numeric");
 		}
+		break;
+	case T_INSTANCE:
+		generate_regex(&criteria->instance, effective_value);
+		break;
+	case T_WINDOW_ROLE:
+		generate_regex(&criteria->window_role, effective_value);
+		break;
+	case T_WINDOW_TYPE:
+		criteria->window_type = parse_window_type(effective_value);
 		break;
 #endif
 	case T_FLOATING:
@@ -536,7 +576,10 @@ struct criteria *criteria_parse(char *raw, char **error_arg) {
 	}
 	++head;
 
-	struct criteria *criteria = calloc(sizeof(struct criteria), 1);
+	struct criteria *criteria = calloc(1, sizeof(struct criteria));
+#if HAVE_XWAYLAND
+	criteria->window_type = ATOM_LAST; // default value
+#endif
 	char *name = NULL, *value = NULL;
 	bool in_quotes = false;
 
