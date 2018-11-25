@@ -9,7 +9,7 @@ UPSTREAM_VER:=$(shell dpkg-parsechangelog | sed -n -e 's/^Version: //p' | sed 's
 	dh $@ --buildsystem=meson
 
 override_dh_auto_configure:
-	dh_auto_configure -O--buildsystem=meson -- -Dsway_version=${UPSTREAM_VER}
+	dh_auto_configure -O--buildsystem=meson -- -Dsway-version=${UPSTREAM_VER}
 
 override_dh_clean:
 	rm -rf build ${CCACHE_DIR}
