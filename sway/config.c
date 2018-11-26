@@ -1,5 +1,4 @@
-#define _POSIX_C_SOURCE 200809L
-#define _XOPEN_SOURCE 700
+#define _XOPEN_SOURCE 600 // for realpath
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -234,6 +233,7 @@ static void config_defaults(struct sway_config *config) {
 	config->auto_back_and_forth = false;
 	config->reading = false;
 	config->show_marks = true;
+	config->title_align = ALIGN_LEFT;
 	config->tiling_drag = true;
 
 	config->smart_gaps = false;
