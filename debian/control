@@ -7,7 +7,7 @@ Build-Depends: debhelper (>= 9), meson, asciidoc, xsltproc, xmlto,
   libgdk-pixbuf2.0-dev,libgles2-mesa-dev, libinput-dev, libjson-c-dev (>=0.13),
   libpam0g-dev,libpango1.0-dev, libsystemd-dev, libxcb-composite0-dev,
   libxcb-ewmh-dev, libxcb-image0-dev, libxcb-xkb-dev, libxkbcommon-dev,
-  libwlroots-dev, libcairo2-dev
+  libwlroots-dev, libcairo2-dev, scdoc
 Standards-Version: 3.9.8
 Homepage: https://github.com/swaywm/sway
 Vcs-Git: https://github.com/snoack/sway -b debian
