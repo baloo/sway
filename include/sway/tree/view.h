@@ -195,12 +195,19 @@ struct sway_view_child {
 
 	struct sway_view *view;
 	struct wlr_surface *surface;
+	bool mapped;
 
 	struct wl_listener surface_commit;
 	struct wl_listener surface_new_subsurface;
 	struct wl_listener surface_map;
 	struct wl_listener surface_unmap;
 	struct wl_listener surface_destroy;
+};
+
+struct sway_subsurface {
+	struct sway_view_child child;
+
+	struct wl_listener destroy;
 };
 
 struct sway_xdg_popup_v6 {

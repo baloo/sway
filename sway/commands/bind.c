@@ -255,8 +255,12 @@ static struct cmd_results *cmd_bindsym_or_bindcode(int argc, char **argv,
 	for (int i = 0; i < mode_bindings->length; ++i) {
 		struct sway_binding *config_binding = mode_bindings->items[i];
 		if (binding_key_compare(binding, config_binding)) {
-			wlr_log(WLR_DEBUG, "overwriting old binding with command '%s'",
-				config_binding->command);
+			wlr_log(WLR_INFO, "Overwriting binding '%s' for device '%s' "
+					"from `%s` to `%s`", argv[0], binding->input,
+					binding->command, config_binding->command);
+			config_add_swaynag_warning("Overwriting binding '%s' for device "
+					"'%s' to `%s` from `%s`", argv[0], binding->input,
+					binding->command, config_binding->command);
 			free_sway_binding(config_binding);
 			mode_bindings->items[i] = binding;
 			overwritten = true;
@@ -289,13 +293,20 @@ void seat_execute_command(struct sway_seat *seat, struct sway_binding *binding) 
 	wlr_log(WLR_DEBUG, "running command for binding: %s", binding->command);
 
 	config->handler_context.seat = seat;
-	struct cmd_results *results = execute_command(binding->command, NULL, NULL);
-	if (results->status == CMD_SUCCESS) {
-		ipc_event_binding(binding);
-	} else {
-		wlr_log(WLR_DEBUG, "could not run command for binding: %s (%s)",
-			binding->command, results->error);
+	list_t *res_list = execute_command(binding->command, NULL, NULL);
+	bool success = true;
+	while (res_list->length) {
+		struct cmd_results *results = res_list->items[0];
+		if (results->status != CMD_SUCCESS) {
+			wlr_log(WLR_DEBUG, "could not run command for binding: %s (%s)",
+				binding->command, results->error);
+			success = false;
+		}
+		free_cmd_results(results);
+		list_del(res_list, 0);
 	}
-
-	free_cmd_results(results);
+	list_free(res_list);
+	if (success) {
+		ipc_event_binding(binding);
+	}
 }

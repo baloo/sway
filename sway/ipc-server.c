@@ -597,13 +597,18 @@ void ipc_client_handle_command(struct ipc_client *client) {
 	switch (client->current_command) {
 	case IPC_COMMAND:
 	{
-		struct cmd_results *results = execute_command(buf, NULL, NULL);
+		list_t *res_list = execute_command(buf, NULL, NULL);
 		transaction_commit_dirty();
-		char *json = cmd_results_to_json(results);
+		char *json = cmd_results_to_json(res_list);
 		int length = strlen(json);
 		client_valid = ipc_send_reply(client, json, (uint32_t)length);
 		free(json);
-		free_cmd_results(results);
+		while (res_list->length) {
+			struct cmd_results *results = res_list->items[0];
+			free_cmd_results(results);
+			list_del(res_list, 0);
+		}
+		list_free(res_list);
 		goto exit_cleanup;
 	}
 
@@ -663,7 +668,8 @@ void ipc_client_handle_command(struct ipc_client *client) {
 		// TODO: Check if they're permitted to use these events
 		struct json_object *request = json_tokener_parse(buf);
 		if (request == NULL) {
-			client_valid = ipc_send_reply(client, "{\"success\": false}", 18);
+			const char msg[] = "{\"success\": false}";
+			client_valid = ipc_send_reply(client, msg, strlen(msg));
 			wlr_log(WLR_INFO, "Failed to parse subscribe request");
 			goto exit_cleanup;
 		}
@@ -690,8 +696,8 @@ void ipc_client_handle_command(struct ipc_client *client) {
 				client->subscribed_events |= event_mask(IPC_EVENT_TICK);
 				is_tick = true;
 			} else {
-				client_valid =
-					ipc_send_reply(client, "{\"success\": false}", 18);
+				const char msg[] = "{\"success\": false}";
+				client_valid = ipc_send_reply(client, msg, strlen(msg));
 				json_object_put(request);
 				wlr_log(WLR_INFO, "Unsupported event type in subscribe request");
 				goto exit_cleanup;
@@ -699,10 +705,12 @@ void ipc_client_handle_command(struct ipc_client *client) {
 		}
 
 		json_object_put(request);
-		client_valid = ipc_send_reply(client, "{\"success\": true}", 17);
+		const char msg[] = "{\"success\": true}";
+		client_valid = ipc_send_reply(client, msg, strlen(msg));
 		if (is_tick) {
 			client->current_command = IPC_EVENT_TICK;
-			ipc_send_reply(client, "{\"first\": true, \"payload\": \"\"}", 30);
+			const char tickmsg[] = "{\"first\": true, \"payload\": \"\"}";
+			ipc_send_reply(client, tickmsg, strlen(tickmsg));
 		}
 		goto exit_cleanup;
 	}
